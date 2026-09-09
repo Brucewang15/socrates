@@ -1,0 +1,24 @@
+# python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# secrets
+.env
+
+# model weights -- never commit these
+*.safetensors
+*.bin
+*.gguf
+*.pt
+weights/
+
+# build artifacts (day 4 CUDA kernels)
+build/
+*.so
+*.o
+
+# benchmark output
+bench/results/*
+!bench/results/.gitkeep
