@@ -6,7 +6,13 @@ this project gets compared against the numbers this script predicts.
 
 Fill in the TODOs, then run:
 
-    uv run arithmetic.py
+    uv run analysis/arithmetic.py Qwen/Qwen3.5-4B
+
+Configs are read from model/configs/ when a pinned copy exists there, so the
+architecture you reasoned about cannot shift under you mid-week. Anything else
+falls back to the Hub. Ground-truth parameter counts are cached in
+model/configs/param_counts.json after the first lookup, so repeat runs are
+fully offline.
 
 The script checks your parameter count against the model's real one. When they
 match, you understand the architecture completely.
@@ -14,23 +20,49 @@ match, you understand the architecture completely.
 
 import argparse
 import json
+import os
+from pathlib import Path
 
-from huggingface_hub import get_safetensors_metadata, hf_hub_download
+CONFIG_DIR = Path(__file__).resolve().parent.parent / "model" / "configs"
+TRUTH_CACHE = CONFIG_DIR / "param_counts.json"
 
 # Hardware profiles: (HBM capacity GB, memory bandwidth GB/s)
 DEVICES = {
     "a10g": (24, 600),        # AWS g5.xlarge
     "l40s": (48, 864),        # AWS g6e.xlarge
-    "m4pro": (48, 273),       # your laptop (unified memory)
+    "m4pro": (48, 273),       # my mac
 }
 
 
+def local_config_path(model_id: str) -> Path:
+    return CONFIG_DIR / f"{model_id.split('/')[-1].lower()}.json"
+
+
 def load_config(model_id: str) -> dict:
-    path = hf_hub_download(model_id, filename="config.json")
+    """Prefer a pinned local config; fall back to the Hub.
+
+    Pass a filesystem path to force a specific file.
+    """
+    direct = Path(model_id)
+    if direct.suffix == ".json" and direct.is_file():
+        path, source = direct, "local"
+    elif local_config_path(model_id).is_file():
+        path, source = local_config_path(model_id), "local"
+    else:
+        from huggingface_hub import hf_hub_download
+
+        path, source = Path(hf_hub_download(model_id, filename="config.json")), "hub"
+
     with open(path) as f:
         cfg = json.load(f)
-    # Some multimodal repos nest the language model config one level down.
-    return cfg.get("text_config", cfg)
+    print(f"  config from {source}: {path}")
+    if "text_config" not in cfg:
+        return cfg
+    # Multimodal repos nest the language model config one level down -- but
+    # leave tie_word_embeddings at the top level, so carry it down.
+    text_cfg = dict(cfg["text_config"])
+    text_cfg.setdefault("tie_word_embeddings", cfg.get("tie_word_embeddings", False))
+    return text_cfg
 
 
 def head_dim(cfg: dict) -> int:
@@ -57,15 +89,19 @@ def count_params(cfg: dict) -> dict[str, int]:
     vocab = cfg["vocab_size"]
     hd = head_dim(cfg)
 
-    # TODO(1): token embedding table -- one vector of width d per vocab entry.
-    embeddings = 0
+    # token embedding table
+    # Ex qwen3.5-4B
+    # Each token has hidden_size dimensions, 2560
+    # There are vocab_size number of tokens, 248320
+    embeddings = d * vocab
 
-    # TODO(2): attention projections for ONE layer.
-    #   q_proj: d -> n_heads * hd
-    #   k_proj: d -> n_kv_heads * hd     <- smaller! this is GQA
-    #   v_proj: d -> n_kv_heads * hd
-    #   o_proj: n_heads * hd -> d
-    attn_per_layer = 0
+    # attention projections for ONE layer.
+    #   q_proj: hd @ d
+    #   k_proj: hd @ d
+    #   v_proj: hd @ d
+    #   o_proj: value down matrix in 3blue1brown
+    # many query projections share the same k/v projections
+    attn_per_layer = n_heads * hd * d + n_kv_heads * hd * d + n_kv_heads * hd * d + n_heads * hd * d
 
     # TODO(3): MLP projections for ONE layer (SwiGLU has THREE matrices).
     #   gate_proj: d -> d_ff
@@ -97,28 +133,50 @@ def kv_cache_bytes_per_token(cfg: dict, dtype_bytes: int = 2) -> int:
     return 0
 
 
-def actual_param_count(model_id: str) -> int | None:
-    """Ground truth, read from safetensors headers (no weight download)."""
+def actual_param_count(model_id: str, offline: bool = False) -> int | None:
+    """Ground truth, read from safetensors headers (no weight download).
+
+    Cached to model/configs/param_counts.json so this costs one network round
+    trip per model, ever.
+    """
+    cache = json.loads(TRUTH_CACHE.read_text()) if TRUTH_CACHE.is_file() else {}
+    if model_id in cache:
+        return cache[model_id]
+    if offline:
+        print("  (no cached ground truth, and --offline was set)")
+        return None
+
     try:
-        meta = get_safetensors_metadata(model_id)
-        return sum(meta.parameter_count.values())
+        from huggingface_hub import get_safetensors_metadata
+
+        total = sum(get_safetensors_metadata(model_id).parameter_count.values())
     except Exception as e:
         print(f"  (couldn't fetch ground truth: {e})")
         return None
 
+    cache[model_id] = total
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    TRUTH_CACHE.write_text(json.dumps(cache, indent=2, sort_keys=True) + "\n")
+    return total
+
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("model", nargs="?", default="Qwen/Qwen3-4B")
+    ap.add_argument("model", nargs="?", default="Qwen/Qwen3.5-4B")
     ap.add_argument("--device", default="a10g", choices=DEVICES)
     ap.add_argument("--dtype-bytes", type=int, default=2, help="2=bf16, 1=fp8")
+    ap.add_argument("--offline", action="store_true",
+                    help="never touch the network; local config + cached truth only")
     args = ap.parse_args()
+    if args.offline:
+        os.environ["HF_HUB_OFFLINE"] = "1"
 
-    cfg = load_config(args.model)
     vram_gb, bandwidth = DEVICES[args.device]
 
     print(f"\n{args.model}  on  {args.device}\n")
-    print("  architecture")
+    cfg = load_config(args.model)
+
+    print("\n  architecture")
     for k in ("hidden_size", "intermediate_size", "num_hidden_layers",
               "num_attention_heads", "num_key_value_heads", "vocab_size",
               "tie_word_embeddings"):
@@ -135,7 +193,7 @@ def main():
         print(f"    {name:<24} {n / 1e9:8.3f} B   {share}")
     print(f"    {'TOTAL':<24} {total / 1e9:8.3f} B")
 
-    truth = actual_param_count(args.model)
+    truth = actual_param_count(args.model, offline=args.offline)
     if truth:
         err = abs(total - truth) / truth * 100 if total else 100.0
         mark = "OK" if err < 1.0 else "MISMATCH"
