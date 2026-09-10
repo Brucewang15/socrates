@@ -103,16 +103,18 @@ def count_params(cfg: dict) -> dict[str, int]:
     # many query projections share the same k/v projections
     attn_per_layer = n_heads * hd * d + n_kv_heads * hd * d + n_kv_heads * hd * d + n_heads * hd * d
 
-    # TODO(3): MLP projections for ONE layer (SwiGLU has THREE matrices).
-    #   gate_proj: d -> d_ff
-    #   up_proj:   d -> d_ff
-    #   down_proj: d_ff -> d
-    mlp_per_layer = 0
+    # MLP projections for one layer
+    #   gate_proj: intermediate_size * token size
+    #   up_proj: intermediate_size * token size
+    #   down_proj: token_size * intermediate_size
+    mlp_per_layer = 3 * d_ff * d
 
-    # TODO(4): the output head, d -> vocab.
-    # Careful: if cfg["tie_word_embeddings"] is True the model REUSES the
-    # embedding table here and this costs zero extra parameters.
-    lm_head = 0
+    # the output head also unembedding matrix. first check tie_word_embeddings
+    # convert final attention output to logits, unemb @ final
+    if cfg["tie_word_embeddings"]:
+        lm_head = 0
+    else:
+        lm_head = vocab * d
 
     return {
         "embeddings": embeddings,
