@@ -131,8 +131,16 @@ def kv_cache_bytes_per_token(cfg: dict, dtype_bytes: int = 2) -> int:
     (num_key_value_heads * head_dim) wide. Note this does NOT depend on
     num_attention_heads -- that's the whole point of GQA.
     """
-    # TODO(5)
-    return 0
+    n_layers = cfg["num_hidden_layers"]
+    n_kv_heads = cfg["num_key_value_heads"]
+    hd = head_dim(cfg)
+
+    # Per layer, per token: one K and one V for each KV head, each hd wide.
+    # o_proj runs after the weighted sum, so these are the pre-lift 256-wide
+    # vectors, not hidden_size-wide ones.
+    per_layer = 2 * n_kv_heads * hd
+
+    return n_layers * per_layer * dtype_bytes
 
 
 def actual_param_count(model_id: str, offline: bool = False) -> int | None:
