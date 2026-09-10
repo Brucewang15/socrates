@@ -1,8 +1,20 @@
-Without cache, assuming each weight is 2 bytes and n = number tokens in current sequence
+# Day 2 — from-scratch forward pass, no KV cache
 
-Memory in GPU:
-weights: 8.04 GB (no matter what)
-attention scores: [1, 32, n, n] each attention block has 32 parallel heads, each producing a [n, n] attention pattern. 64 bytes * n^2
-MLP intermediate: [2, n, 9728] n MLP intermdiate layers running in parallel, each with 9728 activations. 2 for up and gate
-between blocks: [1, 2560, n] vocab size * # of tokens in seq, 5KB * n
-Logis: [1, 151936, n] 304KB * n
+Wed Sep 10, 2026. Implemented `Qwen3-4B` in `model/qwen.py`, verified against
+HuggingFace, then measured what generating without a KV cache actually costs.
+
+---
+
+## Memory, no cache
+
+Assuming bf16 (2 bytes/value) and `n` = tokens in the current sequence.
+All of this is **GPU** memory.
+
+| | shape | size | lives |
+|---|---|---|---|
+| **weights** | — | **8.04 GB**, fixed | always resident |
+| **hidden states** (residual stream) | `[1, n, 2560]` | 5 KB × n | between blocks |
+| **q / k / v** | `[1, n, 4096]`, `[1, n, 1024]` ×2 | 12 KB × n | inside attention |
+| **attention scores** | `[1, 32, n, n]` | **64 bytes × n²** | inside attention |
+| **MLP intermediates** | 2–3 × `[1, n, 9728]` | 39–58 KB × n | inside the MLP |
+| **logits** | `[1, n, 151936]` | **304 KB × n** | returned from forward |

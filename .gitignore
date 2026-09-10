@@ -19,6 +19,3 @@ build/
 *.so
 *.o
 
-# benchmark output
-bench/results/*
-!bench/results/.gitkeep
