@@ -19,6 +19,8 @@ build/
 *.so
 *.o
 
-# benchmark output
-bench/results/*
-!bench/results/.gitkeep
+
+# node
+node_modules/
+.next/
+next-env.d.ts
