@@ -19,3 +19,8 @@ build/
 *.so
 *.o
 
+
+# node
+node_modules/
+.next/
+next-env.d.ts

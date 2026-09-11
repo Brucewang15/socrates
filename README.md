@@ -34,7 +34,7 @@ lesson — RoPE, GQA, KV cache, pre-norm — lives in the canonical dense model.
 analysis/    paper math + measurement scripts (start here)
 model/       from-scratch PyTorch implementation (day 2)
   configs/   pinned config.json for each target model
-engine/      the inference server — batching, scheduler, HTTP (days 3–5)
+backend/     the inference server — batching, scheduler, HTTP (days 3–5)
 kernels/     CUDA kernels (optional stretch, only if time remains)
 frontend/    chat UI (optional)
 bench/       benchmark harness
