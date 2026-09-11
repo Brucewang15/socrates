@@ -73,15 +73,16 @@ def apply_rope(x, cos, sin):
 class KVCache:
     """Post-RoPE keys and values, one entry per layer. Internal layout is up to you."""
 
-    def __init__(self, n_layers: int):
-        self.keys=[None] * n_layers
-        self.values=[None] * n_layers
+    def __init__(self, n_layers: int, n_kv_heads: int, head_dim: int, max_len: int = 40960, dtype=torch.bfloat16, device="mps"):
+        shape = (1, max_len, n_kv_heads, head_dim) # 1 = batch size for now. TODO
+        # one buffer per layer, [x] * n would ref a single tensor n times
+        self.keys = [torch.zeros(shape, dtype=dtype, device=device) for _ in range(n_layers)]
+        self.values = [torch.zeros(shape, dtype=dtype, device=device) for _ in range(n_layers)]
+        self.offset = 0
 
     def __len__(self) -> int:
         """Number of tokens currently cached."""
-        if self.keys[0] is None:
-            return 0
-        return self.keys[0].shape[0]
+        return self.offset
 
     def append(self, layer_idx: int, k, v):
         """Store this step's k and v for one layer/block.
@@ -100,14 +101,20 @@ class KVCache:
             ]
         ]
         """
-        if self.keys[layer_idx] is None:
-            self.keys[layer_idx] = torch.tensor(k[0])
-            self.values[layer_idx] = torch.tensor(v[0])
-        else:
-            # because of GQA a set of Q share one KV!
-            self.keys[layer_idx] = torch.cat([self.keys[layer_idx], k[0]]) # torch.cat creates a new copy. In pytorch memory is contiguous and cannot 'append'
-            self.values[layer_idx] = torch.cat([self.values[layer_idx], v[0]])
-        return (self.keys[layer_idx], self.values[layer_idx])
+        # if self.keys[layer_idx] is None:
+        #     self.keys[layer_idx] = torch.tensor(k[0])
+        #     self.values[layer_idx] = torch.tensor(v[0])
+        # else:
+        #     # because of GQA a set of Q share one KV!
+        #     self.keys[layer_idx] = torch.cat([self.keys[layer_idx], k[0]]) # torch.cat creates a new copy. In pytorch memory is contiguous and cannot 'append'
+        #     self.values[layer_idx] = torch.cat([self.values[layer_idx], v[0]])
+        self.keys[layer_idx][:, self.offset:self.offset+k[0].shape[0]] = k
+        self.values[layer_idx][:, self.offset:self.offset+v[0].shape[0]] = v
+        return (self.keys[layer_idx][:, :self.offset+k[0].shape[0]], self.values[layer_idx][:, :self.offset+v[0].shape[0]])
+
+    def inc(self, num: int):
+        self.offset += num
+
 
 class Attention(nn.Module):
     def __init__(self, cfg: dict):
@@ -139,11 +146,10 @@ class Attention(nn.Module):
         q = apply_rope(self.q_norm(q), cos, sin)
         k = apply_rope(self.k_norm(k), cos, sin)
 
-        # if cache exists, append it!
-        if len(cache) != 0:
-            cache.append(layer_idx, k, v)
+        
+        k, v = cache.append(layer_idx, k, v)
 
-        S = k.shape[1]                                   # total keys: past + new
+        S = k.shape[1]
 
         # give every query head its group's k and v
         k_full = torch.empty(B, S, self.n_heads, self.hd, dtype=k.dtype, device=k.device)
@@ -201,7 +207,7 @@ class Block(nn.Module):
         self.post_attention_layernorm = RMSNorm(cfg["hidden_size"], cfg["rms_norm_eps"])
         self.mlp = MLP(cfg)
 
-    def forward(self, x, cos, sin, cache=None, layer_idx=0):
+    def forward(self, x, cos, sin, cache, layer_idx=0):
         x = x + self.self_attn(self.input_layernorm(x), cos, sin, cache, layer_idx)
         x = x + self.mlp(self.post_attention_layernorm(x))
         return x
@@ -222,42 +228,8 @@ class Qwen3(nn.Module):
         for i, layer in enumerate(self.layers):
             x = layer(x, cos, sin, cache, i)
         x = self.norm(x)
+        # increase offset
+        cache.inc(x.shape[1])
         # multiply by unembedding matrix which is embedding matrix but flipped
         return x @ self.embed_tokens.weight.T
 
-
-def generate(model, ids, max_new_tokens: int, use_cache: bool) -> list[int]:
-    """Greedy decode. With a cache, only the newest token is fed after the first step."""
-    cache = KVCache(model.cfg["num_hidden_layers"]) if use_cache else None
-    out = []
-    with torch.no_grad():
-        for _ in range(max_new_tokens):
-            step = ids if cache is None or len(cache) == 0 else ids[:, -1:]
-            next_id = model(step, cache)[:, -1].argmax(-1, keepdim=True)
-            ids = torch.cat([ids, next_id], dim=1)
-            out.append(next_id.item())
-    return out
-
-
-def main():
-    model = Qwen3(load_config())
-    model.load_state_dict(load_weights(), strict=True)
-    model = model.eval().to("mps", torch.float32)
-
-    ids = tokens().to("mps")
-    n = 20
-
-    baseline = generate(model, ids, n, use_cache=False)
-    cached = generate(model, ids, n, use_cache=True)
-
-    print("no cache:", baseline)
-    print("cached  :", cached)
-    if baseline == cached:
-        print("PASS")
-    else:
-        d = next(i for i, (a, b) in enumerate(zip(baseline, cached)) if a != b)
-        print(f"FAIL -- diverges at token {d}")
-
-
-if __name__ == "__main__":
-    main()

@@ -8,12 +8,14 @@ import time
 from pathlib import Path
 
 import matplotlib
-matplotlib.use("Agg")          # file output only, no GUI backend
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from model.qwen import MODEL_ID, Qwen3, load_config, load_weights
 from transformers import AutoTokenizer
+
+matplotlib.use("Agg")          # file output only, no GUI backend
 
 PROMPT = "how to make pizza?"
 OUT = Path(__file__).resolve().parents[1] / "results" / "no_kv_cache.png"

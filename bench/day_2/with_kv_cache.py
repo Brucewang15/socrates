@@ -7,12 +7,13 @@ import time
 from pathlib import Path
 
 import matplotlib
-matplotlib.use("Agg")          # file output only, no GUI backend
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from model.qwen_kv import MODEL_ID, KVCache, Qwen3, load_config, load_weights
 from transformers import AutoTokenizer
+
+matplotlib.use("Agg")          # file output only, no GUI backend
 
 PROMPT = "how to make pizza?"
 OUT = Path(__file__).resolve().parents[1] / "results" / "with_kv_cache.png"
@@ -33,7 +34,9 @@ def main():
     ids = tok(text, return_tensors="pt").input_ids.to("mps")
 
     print(f"> {PROMPT}\n")
-    cache = KVCache(cfg["num_hidden_layers"])
+    p = next(model.parameters())
+    cache = KVCache(cfg["num_hidden_layers"], cfg["num_key_value_heads"],
+                    cfg["head_dim"], dtype=p.dtype, device=p.device)
     lengths, latencies = [], []
     with torch.no_grad():
         while True:
