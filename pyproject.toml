@@ -1,7 +1,7 @@
 [project]
-name = "inference"
+name = "socrates"
 version = "0.1.0"
-description = "Add your description here"
+description = "LLM inference from first principles"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

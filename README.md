@@ -1,27 +1,30 @@
-# inference
+# socrates
 
-Deploy a Qwen model on AWS from first principles, in five days.
+Build an LLM inference engine from first principles, in five days.
 
 The rule for this project: **predict every number before you measure it.** Every
-benchmark you run gets compared against arithmetic you did in advance. When the
-prediction and the measurement disagree, that gap is the thing you go investigate
-— and the reconciliation is the actual learning.
+benchmark gets compared against arithmetic you did in advance. When the
+prediction and the measurement disagree, that gap is the thing you go
+investigate — and the reconciliation is the actual learning.
 
-- **Days 1–4 model:** `Qwen/Qwen3.5-4B` — 4.660 B params, 9.3 GB @ bf16
-- **Day 5 model:** `Qwen/Qwen3.5-27B` — 27.781 B params, 55.6 GB @ bf16, does
-  *not* fit one GPU, which is the point
-- **Hardware:** `g6e.xlarge` (1× L40S, 48 GB, ~864 GB/s) for days 2–4;
-  `g6e.12xlarge` or `g5.12xlarge` (4 GPUs) for day 5
-- **Dates:** Day 1 = Tue Sep 9, 2026 → Day 5 = Sat Sep 13, 2026
-- **Deliverable:** `docs/writeup.md` — a table of predicted vs. measured, with
-  honest explanations of every gap
+- **Implement** (days 1–2): `Qwen/Qwen3-4B` — dense, 4.022 B params, 8.04 GB @ bf16
+- **Serve** (days 3–5): the same model, through a server you wrote yourself
+- **Baseline:** vLLM, used as a yardstick to measure against — not as the thing
+  you deploy
+- **Hardware:** M4 Pro for correctness, `g6e.xlarge` (1× L40S, 48 GB, ~864 GB/s)
+  for anything about speed
+- **Deliverable:** `docs/writeup.md` — predicted vs. measured, with honest
+  explanations of every gap
 
-Why 4B and not 9B: they are architecturally identical in every dimension that
-matters here — same 24/8 hybrid layer split, same 4 KV heads, same 256 head_dim,
-same 32 KB/token KV cache, same ~50 MB/sequence linear state. 9B costs 2× to run
-and teaches nothing extra. 4B also fits your M4 Pro, so correctness work costs
-nothing. When you want a size that genuinely forces distributed systems, that's
-27B on day 5, not 9B.
+Why build the server instead of running vLLM: typing `vllm serve` teaches you
+almost nothing — the learning is in the scheduler and the batching, and you
+already have the hard part (a correct model with a KV cache). Thousands of
+people have run vLLM; very few have implemented continuous batching.
+
+Why the dense `Qwen3-4B` rather than `Qwen3.5-4B`: hand-writing gated delta-net
+linear attention is a multi-day project on its own, and every transferable
+lesson — RoPE, GQA, KV cache, pre-norm — lives in the canonical dense model.
+`model/configs/` keeps the Qwen3.5 configs pinned for the day-1 arithmetic.
 
 ---
 
@@ -31,13 +34,14 @@ nothing. When you want a size that genuinely forces distributed systems, that's
 analysis/    paper math + measurement scripts (start here)
 model/       from-scratch PyTorch implementation (day 2)
   configs/   pinned config.json for each target model
-kernels/     CUDA/C++ kernels (day 4)
-backend/     serving layer — FastAPI in front of vLLM
-frontend/    chat UI (day 5, optional)
-bench/       load-test harness
-  results/   raw output (gitignored)
+engine/      the inference server — batching, scheduler, HTTP (days 3–5)
+kernels/     CUDA kernels (optional stretch, only if time remains)
+frontend/    chat UI (optional)
+bench/       benchmark harness
+  day_2/     latency with and without a KV cache
+  results/   raw output + plots (gitignored)
 infra/       EC2 launch + setup scripts
-docs/        the writeup — this is the real deliverable
+docs/        daily notes and the writeup — the real deliverable
 ```
 
 `model/configs/` holds configs copied at a pinned revision, so the architecture
@@ -222,115 +226,118 @@ gap between predicted and measured tok/s.
 
 ---
 
-## Day 3 — Thu Sep 11: serve it properly
+## Day 3 — Thu Sep 11: batching
 
-**Goal:** understand why batching is the entire economics of inference.
+**Goal:** one forward pass serving several sequences at once.
 
-1. Install vLLM on the instance, serve `Qwen/Qwen3.5-4B`. Budget time for
-   friction — hybrid linear-attention support is new. Fall back to dense
-   `Qwen3-4B` if you lose more than half a day.
-2. Compare vLLM at batch 1 to your day-2 number. It should be meaningfully
-   faster; know which optimizations bought that (CUDA graphs, PagedAttention,
-   fused kernels, continuous batching).
-3. **The sweep.** Write `bench/` to drive concurrency 1 → 2 → 4 → 8 → 16 → 32 →
-   64 → 128. At 9.3 GB of weights you have ~34 GB free, so you can push far past
-   the knee — that headroom is exactly why 4B beats 9B here. For each level,
-   record total throughput (tok/s), p50 and p99 per-request latency, and
-   time-to-first-token. Save raw output to `bench/results/`.
-4. Plot throughput vs. concurrency. Watch it scale nearly linearly, then flatten.
-   **Explain the knee.** Below it you are memory-bandwidth-bound and batching is
-   nearly free; above it you saturate something else. Which?
-5. Push until you OOM. Compare against your day-1 prediction. The 50 MB/sequence
-   linear-attention state is the term most likely to make you wrong — check
-   whether it explains the gap.
-6. Note the prefill/decode split: time-to-first-token is compute-bound prefill,
-   inter-token latency is bandwidth-bound decode. They respond to batching
-   completely differently, and conflating them is how people misread benchmarks.
+Everything so far assumes `batch = 1`. Batching is the single most important
+fact in LLM serving: 32 requests read the same 8.04 GB of weights once and get
+32 tokens out of it. Same bytes moved, 32× the output. That's why decode being
+bandwidth-bound is good news rather than bad.
 
-**Done when:** you have a throughput-vs-concurrency curve, an explanation of its
-knee, and a measured max concurrency reconciled against prediction.
+1. **Generalise the KV cache to a batch.** `[B, n, 8, 128]` instead of
+   `[1, n, 8, 128]`. This is where the `batch = 1` TODO in `KVCache` comes due.
+2. **Handle ragged lengths.** Sequences in a batch have different lengths, so
+   you need per-sequence position offsets for RoPE and a per-sequence mask. A
+   padded batch where every sequence pretends to be the longest is the simple
+   version; start there.
+3. **Measure the sweep.** Batch 1 → 2 → 4 → 8 → 16 → 32 → 64. For each, record
+   total throughput (tok/s), and p50 / p99 per-request latency.
+4. **Plot throughput vs. batch size and explain the shape.** It should scale
+   nearly linearly, then flatten. Predict where the knee falls *before* you
+   plot it: batching stays nearly free while arithmetic intensity is below the
+   GPU's FLOPs-per-byte ratio, and stops helping once you cross it.
+5. **Push until you OOM.** Compare against the day-1 concurrency prediction.
+
+**Done when:** a throughput-vs-batch curve, an explanation of its knee, and a
+measured max batch size reconciled against the prediction.
 
 ---
 
-## Day 4 — Fri Sep 12: go down a level (the differentiator)
+## Day 4 — Fri Sep 12: continuous batching
 
-**Goal:** one hand-written GPU kernel, benchmarked, and its speedup explained by
-the same bandwidth arithmetic from day 1.
+**Goal:** requests join and leave the batch *every step* instead of waiting for
+the slowest one to finish. This is the most interesting code you'll write all
+week, and it's the main thing vLLM does that a naive server doesn't.
 
-This is the day that separates the project from every other "I deployed an LLM"
-repo. Anyone can run vLLM. Very few applicants have written a kernel and measured
-it. If you are targeting Etched or Cerebras, **this day matters more than day 5**
-— do not let the frontend steal it.
+The problem with day 3's static batching: if one request wants 500 tokens and
+seven want 20, the whole batch is held hostage for 500 steps and seven slots sit
+idle. Under real traffic that wastes most of your GPU.
 
-1. Pick one fusion target in `kernels/`. Easiest first:
-   - **Fused RMSNorm** — simple, clearly bandwidth-bound, good first kernel.
-   - **Fused SwiGLU** — `gate_proj`, `up_proj`, `silu`, multiply in one pass
-     instead of three kernel launches and three round-trips to HBM. Bigger win,
-     and the MLP is 49% of this model.
-2. Write it in CUDA C++. Bind it with `torch.utils.cpp_extension`. Raw CUDA is
-   higher signal than Triton for ASIC companies, because their kernel toolchains
-   are C++-shaped.
-3. **Verify numerics first** against the PyTorch version with `torch.allclose`,
-   then drop it into your day-2 forward pass.
-4. **Predict the speedup before benchmarking.** Count the HBM round-trips you
-   eliminated, multiply by tensor size, divide by 864 GB/s. That gives you
-   microseconds saved.
-5. Benchmark with CUDA event timing and proper warmup. Report predicted vs.
-   measured. Profile with `nsys` or `ncu` if the gap is large.
+1. **A request queue.** Incoming prompts wait; finished ones are evicted.
+2. **A scheduler.** Each step, decide which waiting requests get admitted, based
+   on how much cache memory is free. Your day-1 arithmetic —
+   `free VRAM ÷ 144 KB/token` — becomes actual admission-control code.
+3. **Mid-batch join and leave.** A new request needs prefill while everyone else
+   is decoding. The simple approach runs prefill separately, then merges; the
+   better one interleaves them. Either is a legitimate design — document which
+   you chose and why.
+4. **Measure against day 3.** Same total work, uneven request lengths. The gap
+   between static and continuous batching *is* the result.
+5. **If time remains:** replace `torch.cat` with a preallocated buffer, then
+   fixed-size blocks. At step 1000 you currently copy 149 MB to add 144 KB —
+   that's the problem PagedAttention solves.
 
-**Done when:** a kernel that is numerically correct, measurably faster, and whose
-speedup you explained with arithmetic *before* you measured it.
+**Done when:** continuous batching measurably beats static batching under
+uneven request lengths, and you can explain the mechanism.
 
 ---
 
-## Day 5 — Sat Sep 13: distribute, then write it up
+## Day 5 — Sat Sep 13: serve it, compare it, write it up
 
-**Morning — scale to a model that doesn't fit.**
+**Morning — make it a real server.**
 
-`Qwen/Qwen3.5-27B` is 27.781 B params → **55.6 GB @ bf16**, which does not fit a
-single 48 GB L40S. Tensor parallelism stops being a demo and becomes a
-requirement. Its shape:
+1. **FastAPI with token streaming.** An OpenAI-compatible
+   `/v1/chat/completions` is worth the extra hour: every client already speaks
+   it, and it makes the project demoable.
+2. **Load-test it.** Concurrent clients, mixed prompt lengths, sustained
+   traffic. Record throughput, p50/p99 latency, and time-to-first-token.
 
-```
-hidden_size 5120   intermediate_size 17408   num_hidden_layers 64
-num_attention_heads 24   num_key_value_heads 4   head_dim 256
-layer_types: 48 × linear_attention + 16 × full_attention
-KV cache: 64 KB/token        linear state: ~151 MB/sequence
-```
+**Afternoon — vLLM as the yardstick.**
 
-1. Launch `g6e.12xlarge` (4× L40S, 192 GB) or `g5.12xlarge` (4× A10G, 96 GB).
-2. Serve with `--tensor-parallel-size 2`, then 4. Measure throughput at each.
-3. **Find where TP falls short of linear scaling.** TP=2 will not be 2× TP=1.
-   That gap is all-reduce communication — every layer, both sublayers. Quantify
-   it, and check whether NVLink vs. PCIe explains what you see.
-4. If you'd rather do systems than kernels: skip TP and run two single-GPU
-   replicas of 4B behind a load balancer. Compare round-robin against
-   least-loaded routing under *uneven request lengths* — that's where you learn
-   why head-of-line blocking is the defining problem of LLM serving.
+Install vLLM, serve the same model, run the identical load test, and report
+**your engine as a percentage of vLLM's throughput.**
 
-**Afternoon — `docs/writeup.md`. This is the deliverable.**
+That's a better result than any absolute number, and it keeps the
+industry-standard reference in the writeup without depending on it. Then name
+the specific things that explain the gap — CUDA graphs, FlashAttention, fused
+kernels, paged memory. Knowing *why* you're at 60% is worth more than being at
+60%.
 
-Structure it as one table:
+**Then `docs/writeup.md`. This is the deliverable.**
 
 | quantity | predicted | measured | why they differ |
 |---|---|---|---|
 | weight memory | | | |
 | batch-1 decode tok/s | | | |
-| max concurrent @ 4096 ctx | | | |
+| KV cache bytes/token | | | |
+| max batch before OOM | | | |
 | throughput @ batch 32 | | | |
-| kernel speedup | | | |
-| TP=2 speedup | | | |
+| static vs. continuous batching | | | |
+| % of vLLM throughput | | | |
 
-Then a short section per gap explaining the mechanism. Honest gaps are worth more
-than clean numbers — "I predicted 93 tok/s, measured 61, and here is where the
-other 32 went" is a stronger signal than any benchmark you could report.
-
-**If time remains:** `backend/` FastAPI wrapper with streaming, `frontend/` chat
-UI. Be honest that these prove nothing about inference — build them only after
-the writeup is done.
+A short section per gap explaining the mechanism. Honest gaps beat clean
+numbers — "I predicted 93 tok/s, measured 61, and here is where the other 32
+went" is a stronger signal than any benchmark.
 
 **Last step:** terminate every instance. Check the EC2 console in every region
 you touched.
+
+---
+
+## Optional stretch: one CUDA kernel
+
+Only if the engine is done and working. Not a day; an afternoon.
+
+A fused **RMSNorm** kernel is the cheapest way to keep the kernel signal —
+simpler than SwiGLU, same argument. Write it in CUDA C++, bind it with
+`torch.utils.cpp_extension`, verify numerics with `torch.allclose`, then
+**predict the speedup before measuring**: count the HBM round-trips you
+eliminated, multiply by tensor size, divide by 864 GB/s.
+
+This matters more for kernel/compiler roles (Etched, Cerebras) than for
+ML-infra roles generally. A working server beats a kernel attached to nothing,
+so build the server first.
 
 ---
 
@@ -344,8 +351,8 @@ Keep notes as you go; these are the questions the project exists to answer.
 - Why does the hybrid linear/full attention split change the capacity math, and
   where is the crossover?
 - Why does `tie_word_embeddings` matter more at 4B than at 70B?
-- What does tensor parallelism cost in communication, and why isn't TP=2 twice
-  as fast?
+- Why does continuous batching beat static batching, and by how much?
+- What is the scheduler actually deciding, and what constrains it?
 - Why are Cerebras's tok/s numbers so high? (Hint: their weights live in on-wafer
   SRAM, so the bandwidth term in `bandwidth ÷ weight_GB` is replaced by something
   orders of magnitude larger. You will be able to answer this properly after
