@@ -71,12 +71,12 @@ def main():
     ax1.plot(lengths, slope * lengths + intercept, "-", lw=1.2, color="#dc2626",
              label=f"fit: {slope:.3f}·n + {intercept:.0f} ms")
     ax1.set(xlabel="sequence length (tokens)", ylabel="latency per token (ms)",
-            title="per-step cost is flat")
+            title="per-step cost")
     ax1.legend(fontsize=8)
 
     ax2.plot(np.arange(1, len(cumulative) + 1), cumulative, lw=1.5, color="#16a34a")
     ax2.set(xlabel="tokens generated", ylabel="cumulative time (s)",
-            title="total cost grows linearly")
+            title="total cost")
 
     for ax in (ax1, ax2):
         ax.grid(alpha=0.25)
