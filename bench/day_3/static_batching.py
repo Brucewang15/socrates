@@ -13,6 +13,7 @@ Results go to bench/results/static_batching.{npz,png}; compare.py reads the npz.
 
 import argparse
 
+from model.qwen_batch import Engine
 from workload import (
     add_args,
     build_requests,
@@ -24,8 +25,6 @@ from workload import (
     required_max_len,
     save,
 )
-
-from model.qwen_batch import Engine
 
 STEM = "static_batching"
 
