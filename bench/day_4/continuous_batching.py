@@ -1,12 +1,13 @@
 """Continuous batching: a finished request is evicted and replaced the same step.
 
-    uv run bench/day_3/continuous_batching.py
-    uv run bench/day_3/continuous_batching.py --requests 32 --max-batch 8
+    uv run bench/day_4/continuous_batching.py
+    uv run bench/day_4/continuous_batching.py --requests 32 --max-batch 8
 
-Same model, same cache, same kernels, same requests as static_batching.py. The
-only thing that changed is the admission rule in model/qwen_batch.Engine.admit:
-rows are refilled every step instead of once per wave. So whatever gap the two
-scripts show is scheduling and nothing else.
+Engine: backend/inference_cont.py over model/qwen_kv_cont.py (ragged
+cache, no padding). The static baseline in static_batching.py is a *different*
+implementation -- backend/inference_static.py over model/qwen_kv_seq.py, which
+pads a wave and marches it in lockstep. So the gap between these two scripts is
+scheduling plus the cost of padding, not scheduling alone.
 
 What to expect, and why:
 
@@ -37,7 +38,7 @@ from workload import (
     save,
 )
 
-from model.qwen_batch import Engine
+from backend.inference_cont import Engine
 
 STEM = "continuous_batching"
 
@@ -52,7 +53,7 @@ def main():
     print_workload(requests, args.max_batch, max_len)
 
     engine = Engine(model, cfg, stop_ids=tok.all_special_ids,
-                    max_batch=args.max_batch, max_len=max_len, policy="continuous")
+                    max_batch=args.max_batch, max_len=max_len)
     result = engine.run(requests, progress=True)
 
     m = metrics(result)

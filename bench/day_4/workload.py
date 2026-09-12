@@ -28,14 +28,8 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from model.qwen_batch import (
-    MODEL_ID,
-    Qwen3Batch,
-    Request,
-    load_config,
-    load_weights,
-    pick_device,
-)
+from backend.inference_cont import Request
+from model.qwen_kv_cont import pick_device
 from transformers import AutoTokenizer
 
 RESULTS = Path(__file__).resolve().parents[1] / "results"
@@ -218,8 +212,8 @@ def plot_run(result, stem: str, color: str, subtitle: str) -> Path:
     return out
 
 
-def load_model(args):
-    """Load Qwen3-4B into the ragged-batch model. Shared so both runs match.
+def _load(args, module, cls_name: str):
+    """Shared low-memory load path, for either model module.
 
     Built on the meta device and loaded with assign=True, so the checkpoint
     tensors *become* the parameters. The obvious path -- construct in fp32 on
@@ -227,19 +221,33 @@ def load_model(args):
     fp32 params plus the 8 GB state dict) and will swap or die on a 32 GB
     machine. This peaks at roughly the checkpoint size.
     """
-
     device = pick_device(args.device)
     dtype = getattr(torch, args.dtype)
-    print(f"device={device} dtype={args.dtype}")
+    print(f"device={device} dtype={args.dtype} "
+          f"model={module.__name__.split('.')[-1]}.{cls_name}")
 
-    tok = AutoTokenizer.from_pretrained(MODEL_ID)
-    cfg = load_config()
+    tok = AutoTokenizer.from_pretrained(module.MODEL_ID)
+    cfg = module.load_config()
     with torch.device("meta"):
-        model = Qwen3Batch(cfg)
-    model.load_state_dict(load_weights(), strict=True, assign=True)
+        model = getattr(module, cls_name)(cfg)
+    model.load_state_dict(module.load_weights(), strict=True, assign=True)
     model = model.eval().to(device, dtype)
 
     params = sum(p.numel() for p in model.parameters())
     print(f"{params / 1e9:.3f} B params, "
           f"{params * torch.empty((), dtype=dtype).element_size() / 1e9:.2f} GB resident")
     return tok, cfg, model, device
+
+
+def load_model(args):
+    """The ragged model behind continuous batching."""
+    from model import qwen_kv_cont
+
+    return _load(args, qwen_kv_cont, "Qwen3Continuous")
+
+
+def load_seq_model(args):
+    """The padded, lockstep model behind the static baseline."""
+    from model import qwen_kv_seq
+
+    return _load(args, qwen_kv_seq, "Qwen3")

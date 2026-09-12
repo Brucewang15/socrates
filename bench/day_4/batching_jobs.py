@@ -1,8 +1,8 @@
 """The 8-job timeline from bench/results/batching.png, under both policies.
 
-    uv run bench/day_3/batching_jobs.py                  # both, batch of 4
-    uv run bench/day_3/batching_jobs.py --policy continuous
-    uv run bench/day_3/batching_jobs.py --max-batch 4 --max-new-tokens 300
+    uv run bench/day_4/batching_jobs.py                  # both, batch of 4
+    uv run bench/day_4/batching_jobs.py --policy continuous
+    uv run bench/day_4/batching_jobs.py --max-batch 4 --max-new-tokens 300
 
 Same eight prompts, all submitted at t=0, same bars as the original chart:
 
@@ -21,12 +21,15 @@ alone.
 """
 
 import argparse
+import gc
 from pathlib import Path
 
 import numpy as np
-from workload import RESULTS, load_model
+import torch
+from static_batching import run_static
+from workload import RESULTS, load_model, load_seq_model
 
-from model.qwen_batch import Engine, Request
+from backend.inference_cont import Engine, Request
 
 # Exactly the jobs in bench/day_3/batching.py, in the same order. The original
 # chart truncates its y-labels to 30 characters, which is why the last one reads
@@ -160,24 +163,39 @@ def main():
     ap.add_argument("--dtype", default="bfloat16")
     args = ap.parse_args()
 
-    tok, cfg, model, device = load_model(args)
+    tok, cfg, model, device = (None,) * 4
     policies = ["static", "continuous"] if args.policy == "both" else [args.policy]
 
     summaries = {}
     for policy in policies:
-        requests = build(tok, device, args.max_new_tokens)
-        max_len = max(r.prompt_len + r.max_new_tokens for r in requests)
-        engine = Engine(model, cfg, stop_ids=tok.all_special_ids,
-                        max_batch=args.max_batch, max_len=max_len, policy=policy)
-        print(f"\nrunning {policy}: {len(requests)} jobs, {args.max_batch} seats, "
-              f"cache {engine.cache.bytes_reserved / 1e9:.2f} GB")
-        result = engine.run(requests, progress=True)
+        # one model at a time: the two are 8 GB each, and 16 GB resident would
+        # swap on a 32 GB machine
+        if policy == "static":
+            tok, cfg, model, device = load_seq_model(args)
+            requests = build(tok, device, args.max_new_tokens)
+            print(f"\nrunning static: {len(requests)} jobs, {args.max_batch} seats")
+            result = run_static(model, cfg, tok, requests, max_batch=args.max_batch,
+                                device=device, dtype=getattr(torch, args.dtype))
+        else:
+            tok, cfg, model, device = load_model(args)
+            requests = build(tok, device, args.max_new_tokens)
+            max_len = max(r.prompt_len + r.max_new_tokens for r in requests)
+            engine = Engine(model, cfg, stop_ids=tok.all_special_ids,
+                            max_batch=args.max_batch, max_len=max_len)
+            print(f"\nrunning continuous: {len(requests)} jobs, {args.max_batch} seats, "
+                  f"cache {engine.cache.bytes_reserved / 1e9:.2f} GB")
+            result = engine.run(requests, progress=True)
 
         released = release_times(result)
         summaries[policy] = report(result, released)
 
         RESULTS.mkdir(parents=True, exist_ok=True)
         plot(result, released, args, RESULTS / f"batching_{policy}.png")
+
+        del model, result
+        gc.collect()
+        if device.type == "mps":
+            torch.mps.empty_cache()
 
     if len(summaries) == 2:
         s, c = summaries["static"], summaries["continuous"]

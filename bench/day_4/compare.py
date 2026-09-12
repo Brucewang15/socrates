@@ -1,8 +1,8 @@
 """Static vs continuous batching, side by side. Reads the saved npz files.
 
-    uv run bench/day_3/static_batching.py
-    uv run bench/day_3/continuous_batching.py
-    uv run bench/day_3/compare.py
+    uv run bench/day_4/static_batching.py
+    uv run bench/day_4/continuous_batching.py
+    uv run bench/day_4/compare.py
 
 Run both benchmarks first with the same flags -- compare.py refuses to compare
 runs that did different amounts of work, since a throughput ratio between
@@ -38,7 +38,7 @@ ROWS = [
 def load(stem: str):
     path = RESULTS / f"{stem}.npz"
     if not path.is_file():
-        raise SystemExit(f"{path} missing -- run: uv run bench/day_3/{stem}.py")
+        raise SystemExit(f"{path} missing -- run: uv run bench/day_4/{stem}.py")
     z = np.load(path, allow_pickle=False)
     return z, json.loads(str(z["meta"]))
 
@@ -56,16 +56,21 @@ def main():
     zs, ms = load("static_batching")
     zc, mc = load("continuous_batching")
 
-    if ms["out_tokens"] != mc["out_tokens"] or ms["requests"] != mc["requests"]:
+    if ms["requests"] != mc["requests"]:
         raise SystemExit(
-            f"workloads differ: static produced {ms['out_tokens']} tokens over "
-            f"{ms['requests']} requests, continuous {mc['out_tokens']} over "
+            f"workloads differ: static ran {ms['requests']} requests, continuous "
             f"{mc['requests']}. Re-run both with the same flags."
         )
+    if ms["out_tokens"] != mc["out_tokens"]:
+        print(f"note: static produced {ms['out_tokens']} tokens, continuous "
+              f"{mc['out_tokens']} ({abs(ms['out_tokens'] - mc['out_tokens']) / ms['out_tokens']:.1%} "
+              f"apart). The two engines differ -- static pads a wave and attends to\n"
+              f"      its pad tokens -- so greedy output can diverge. Treat the "
+              f"throughput ratio as approximate.\n")
 
     width = max(len(label) for label, *_ in ROWS)
-    print(f"{mc['out_tokens']} output tokens, {mc['requests']} requests, "
-          f"identical workload\n")
+    print(f"{mc['requests']} requests, {mc['out_tokens']} output tokens "
+          f"(continuous)\n")
     print(f"{'':<{width}}  {'static':>10}  {'continuous':>10}  {'ratio':>8}")
     for label, key, fmt, better in ROWS:
         s, c = scale(key, ms[key]), scale(key, mc[key])
@@ -132,7 +137,7 @@ def main():
         ax.grid(alpha=0.25)
         ax.spines[["top", "right"]].set_visible(False)
 
-    fig.suptitle("static vs continuous batching, identical workload and kernels",
+    fig.suptitle("static (padded waves) vs continuous (ragged, refilled every step)",
                  fontsize=10)
     fig.tight_layout()
     fig.savefig(OUT, dpi=150)
