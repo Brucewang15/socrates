@@ -54,13 +54,13 @@ threading.Thread(target=serve, daemon=True).start()
 
 
 class ChatRequest(BaseModel):
-    message: str
+    prompt: str
 
 
 @app.post("/api/chat")
 def chat(req: ChatRequest) -> dict[str, str]:
     try:
-        r = engine.submit(req.message)
+        r = engine.submit(req.prompt)
     except ValueError as e:
         raise HTTPException(status_code=413, detail=str(e)) from e
 
