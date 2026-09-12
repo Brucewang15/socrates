@@ -6,6 +6,7 @@ Prefill is sequential -- one request at a time, its own length, no padding.
 Decode runs every live row together.
 """
 
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -50,6 +51,9 @@ class Request:
     submitted: float = field(default_factory=time.perf_counter)
     first_token: float = 0.0
     finished: float = 0.0
+    # set when the request retires, so a serving thread can block on one
+    # request instead of polling. The demo path ignores it.
+    event: threading.Event = field(default_factory=threading.Event)
 
 
 class Engine:
@@ -73,14 +77,20 @@ class Engine:
             [{"role": "user", "content": prompt}],
             tokenize=False, add_generation_prompt=True, enable_thinking=False,
         )
-        req.ids = self.tok(text, return_tensors="pt").input_ids.to(DEVICE)
+        req.ids = self.tok(text, return_tensors="pt").input_ids
+        if req.ids.shape[1] + MAX_NEW_TOKENS > MAX_LEN:
+            raise ValueError(f"prompt is {req.ids.shape[1]} tokens; with "
+                             f"{MAX_NEW_TOKENS} new it exceeds the {MAX_LEN}-token row")
         self.pending.append(req)
         return req
 
+    @torch.no_grad()
     def prefill(self, req: Request, row: int) -> None:
         rows = slice(row, row + 1)
-        positions = torch.arange(req.ids.shape[1], device=DEVICE)[None]
-        logits = self.model(req.ids, self.cache, rows, positions)
+        # the only thread that touches the device is the one running the loop
+        ids = req.ids.to(DEVICE)
+        positions = torch.arange(ids.shape[1], device=DEVICE)[None]
+        logits = self.model(ids, self.cache, rows, positions)
         self.record(req, int(logits[:, -1].argmax(-1)))
 
     def admit(self) -> None:
@@ -93,6 +103,7 @@ class Engine:
             self.n_active += 1
             self.prefill(req, row)
 
+    @torch.no_grad()
     def decode_step(self) -> None:
         live = self.rows[:self.n_active]
         ids = torch.tensor([[r.output[-1]] for r in live], device=DEVICE)
@@ -119,6 +130,7 @@ class Engine:
             self.rows[row].row = row
         self.rows[last] = None
         self.n_active -= 1
+        req.event.set()
 
     def run(self) -> None:
         while self.pending or self.n_active:
