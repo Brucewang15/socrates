@@ -28,7 +28,15 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from model.qwen_batch import Request
+from model.qwen_batch import (
+    MODEL_ID,
+    Qwen3Batch,
+    Request,
+    load_config,
+    load_weights,
+    pick_device,
+)
+from transformers import AutoTokenizer
 
 RESULTS = Path(__file__).resolve().parents[1] / "results"
 
@@ -219,15 +227,6 @@ def load_model(args):
     fp32 params plus the 8 GB state dict) and will swap or die on a 32 GB
     machine. This peaks at roughly the checkpoint size.
     """
-    from transformers import AutoTokenizer
-
-    from model.qwen_batch import (
-        MODEL_ID,
-        Qwen3Batch,
-        load_config,
-        load_weights,
-        pick_device,
-    )
 
     device = pick_device(args.device)
     dtype = getattr(torch, args.dtype)
