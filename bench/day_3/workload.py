@@ -40,7 +40,7 @@ RAW_PROMPT = "The capital of France is"         # analysis/reference.py
 def add_args(ap: argparse.ArgumentParser) -> argparse.ArgumentParser:
     """Flags shared by both benchmarks, so the workloads stay comparable."""
     ap.add_argument("--requests", type=int, default=16)
-    ap.add_argument("--max-batch", type=int, default=8,
+    ap.add_argument("--max-batch", type=int, default=4,
                     help="rows in the KV cache, i.e. the concurrency ceiling")
     ap.add_argument("--short-tokens", type=int, default=24)
     ap.add_argument("--long-tokens", type=int, default=160)
