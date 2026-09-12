@@ -24,3 +24,7 @@ build/
 node_modules/
 .next/
 next-env.d.ts
+
+
+# macos
+.DS_Store

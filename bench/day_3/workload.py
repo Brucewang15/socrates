@@ -211,11 +211,23 @@ def plot_run(result, stem: str, color: str, subtitle: str) -> Path:
 
 
 def load_model(args):
-    """Load Qwen3-4B into the ragged-batch model. Shared so both runs match."""
-    from model.qwen_batch import Qwen3Batch, load_config, load_weights, pick_device
+    """Load Qwen3-4B into the ragged-batch model. Shared so both runs match.
+
+    Built on the meta device and loaded with assign=True, so the checkpoint
+    tensors *become* the parameters. The obvious path -- construct in fp32 on
+    CPU, then load, then cast -- peaks at ~24 GB for this 8 GB model (16 GB of
+    fp32 params plus the 8 GB state dict) and will swap or die on a 32 GB
+    machine. This peaks at roughly the checkpoint size.
+    """
     from transformers import AutoTokenizer
 
-    from model.qwen_batch import MODEL_ID
+    from model.qwen_batch import (
+        MODEL_ID,
+        Qwen3Batch,
+        load_config,
+        load_weights,
+        pick_device,
+    )
 
     device = pick_device(args.device)
     dtype = getattr(torch, args.dtype)
@@ -223,7 +235,12 @@ def load_model(args):
 
     tok = AutoTokenizer.from_pretrained(MODEL_ID)
     cfg = load_config()
-    model = Qwen3Batch(cfg)
-    model.load_state_dict(load_weights(), strict=True)
+    with torch.device("meta"):
+        model = Qwen3Batch(cfg)
+    model.load_state_dict(load_weights(), strict=True, assign=True)
     model = model.eval().to(device, dtype)
+
+    params = sum(p.numel() for p in model.parameters())
+    print(f"{params / 1e9:.3f} B params, "
+          f"{params * torch.empty((), dtype=dtype).element_size() / 1e9:.2f} GB resident")
     return tok, cfg, model, device
