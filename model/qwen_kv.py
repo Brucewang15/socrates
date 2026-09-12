@@ -91,8 +91,8 @@ class KVCache:
         Returns the full cached (K, V) for that layer, same layout.
         TODO: for now we're assuming batch is 1 because only serving 1 user at once
         keys:
-        [ 
-            [ block 0
+        [ block 0
+            [ batch 0
                 [ token 0
                     [ head 0
                         [128 dim], [128 dim], ... 8 of them]
