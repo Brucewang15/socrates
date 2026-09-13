@@ -3,7 +3,7 @@
     uv run analysis/reference.py                 # capture -> model/reference.pt
     uv run analysis/reference.py --list          # show captured keys
 
-In model/qwen.py (run from the repo root as `uv run -m model.qwen`):
+In model/qwen/qwen.py (run from the repo root as `uv run -m model.qwen.qwen`):
 
     from analysis.reference import check, tokens
     check("layers.0.self_attn", my_attn_out)

@@ -1,9 +1,9 @@
 """
-From-scratch Qwen3-4B forward pass.
+Ragged KV cache for continuous batching. Model only -- no scheduler.
 
-    uv run -m model.qwen        # diff every piece against HuggingFace
-
-Module names match the checkpoint's tensor names so load_state_dict works directly.
+Every row carries its own length, so rows can sit at different positions. The
+caller says which rows it is running and the absolute position of each token
+it is feeding; everything else follows from that.
 """
 
 import json
@@ -11,12 +11,11 @@ import math
 from pathlib import Path
 
 import torch
-from analysis.reference import check, load, tokens
 from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
 from torch import nn
 
-CONFIG = Path(__file__).resolve().parent / "configs" / "qwen3-4b.json"
+CONFIG = Path(__file__).resolve().parents[1] / "configs" / "qwen3-4b.json"
 MODEL_ID = "Qwen/Qwen3-4B"
 
 
@@ -45,15 +44,15 @@ class RMSNorm(nn.Module):
         return x / rms * self.weight
 
 
-def rope_tables(cfg: dict, seq_len: int, device=None):
-    """cos, sin of shape [1, seq_len, head_dim]."""
+def rope_tables(cfg: dict, positions):
+    """cos, sin of shape [rows, T, head_dim] for arbitrary absolute positions."""
     hd, base = cfg["head_dim"], cfg["rope_theta"]
     # theta_k = base ** (-2k / hd), one per dimension pair
-    inv_freq = 1.0 / (base ** (torch.arange(0, hd, 2, device=device).float() / hd))
-    angles = torch.outer(torch.arange(seq_len, device=device).float(), inv_freq)
+    inv_freq = 1.0 / (base ** (torch.arange(0, hd, 2, device=positions.device).float() / hd))
+    angles = positions.float()[..., None] * inv_freq
     # Duplicated to full width so apply_rope is elementwise.
     angles = torch.cat([angles, angles], dim=-1)
-    return angles.cos()[None], angles.sin()[None]
+    return angles.cos(), angles.sin()
 
 
 def rotate_half(x):
@@ -67,6 +66,48 @@ def apply_rope(x, cos, sin):
     cos = cos[:, :, None, :].to(x.dtype)
     sin = sin[:, :, None, :].to(x.dtype)
     return x * cos + rotate_half(x) * sin
+
+
+class KVCache:
+    """Post-RoPE keys and values, one buffer per layer, one row per sequence.
+
+    Rows are ragged: lengths[r] is how many tokens row r has written. A row is
+    handed to a new request by setting its length back to 0.
+    """
+
+    def __init__(self, max_batch: int, n_layers: int, n_kv_heads: int, head_dim: int,
+                 max_len: int = 2048, dtype=torch.bfloat16, device="mps"):
+        shape = (max_batch, max_len, n_kv_heads, head_dim)
+        # one buffer per layer, [x] * n would ref a single tensor n times
+        self.keys = [torch.zeros(shape, dtype=dtype, device=device) for _ in range(n_layers)]
+        self.values = [torch.zeros(shape, dtype=dtype, device=device) for _ in range(n_layers)]
+        self.lengths = [0] * max_batch
+
+    def reset(self, row: int) -> None:
+        self.lengths[row] = 0
+
+    def move_row(self, src: int, dst: int) -> None:
+        """Relocate a live row so the active block stays packed at 0..n-1."""
+        n = self.lengths[src]
+        for k, v in zip(self.keys, self.values):
+            k[dst, :n] = k[src, :n]
+            v[dst, :n] = v[src, :n]
+        self.lengths[dst], self.lengths[src] = n, 0
+
+    def append(self, layer_idx: int, rows: slice, k, v, positions):
+        """Write k, v at each row's own positions, return every row's live span.
+
+        k, v:      [rows, T, n_kv_heads, head_dim], the new tokens only
+        positions: [rows, T], absolute position of each of those tokens
+        """
+        K, V = self.keys[layer_idx], self.values[layer_idx]
+        r = torch.arange(rows.start, rows.stop, device=k.device)[:, None]
+        K[r, positions] = k
+        V[r, positions] = v
+        end = int(positions.max()) + 1
+        for i, row in enumerate(range(rows.start, rows.stop)):
+            self.lengths[row] = int(positions[i, -1]) + 1
+        return K[rows, :end], V[rows, :end]
 
 
 class Attention(nn.Module):
@@ -85,8 +126,7 @@ class Attention(nn.Module):
         self.q_norm = RMSNorm(self.hd, cfg["rms_norm_eps"])
         self.k_norm = RMSNorm(self.hd, cfg["rms_norm_eps"])
 
-    def forward(self, x, cos, sin):
-        # TODO: understand this later
+    def forward(self, x, cos, sin, cache, layer_idx, rows, positions):
         B, T, _ = x.shape
         group = self.n_heads // self.n_kv_heads          # 4 query heads share one kv head
 
@@ -99,8 +139,13 @@ class Attention(nn.Module):
         q = apply_rope(self.q_norm(q), cos, sin)
         k = apply_rope(self.k_norm(k), cos, sin)
 
+        
+        k, v = cache.append(layer_idx, rows, k, v, positions)
+
+        S = k.shape[1]
+
         # give every query head its group's k and v
-        k_full = torch.empty(B, T, self.n_heads, self.hd, dtype=k.dtype, device=k.device)
+        k_full = torch.empty(B, S, self.n_heads, self.hd, dtype=k.dtype, device=k.device)
         v_full = torch.empty_like(k_full)
         for h in range(self.n_heads):
             k_full[:, :, h] = k[:, :, h // group]
@@ -110,13 +155,15 @@ class Attention(nn.Module):
         q = q.transpose(1, 2)
         k_full = k_full.transpose(1, 2)
         v_full = v_full.transpose(1, 2)
-
+    
         # every query against every key
         scores = (q @ k_full.transpose(-2, -1)) / math.sqrt(self.hd)
 
-        # a token may not see the future
-        mask = torch.triu(torch.ones(T, T, dtype=torch.bool, device=x.device), diagonal=1)
-        scores = scores.masked_fill(mask, float("-inf"))
+        # a token may not see the future, and a row may not see slots it has
+        # not written. Both are "key index > this token's own position".
+        k_pos = torch.arange(S, device=x.device)                          # [S]
+        mask = k_pos > positions[:, :, None]                              # [rows, T, S]
+        scores = scores.masked_fill(mask[:, None], float("-inf"))
 
         # softmax along the key axis, then weight the values
         out = scores.softmax(dim=-1) @ v_full            # [B, heads, T, head_dim]
@@ -153,8 +200,9 @@ class Block(nn.Module):
         self.post_attention_layernorm = RMSNorm(cfg["hidden_size"], cfg["rms_norm_eps"])
         self.mlp = MLP(cfg)
 
-    def forward(self, x, cos, sin):
-        x = x + self.self_attn(self.input_layernorm(x), cos, sin)
+    def forward(self, x, cos, sin, cache, layer_idx, rows, positions):
+        x = x + self.self_attn(self.input_layernorm(x), cos, sin, cache, layer_idx,
+                               rows, positions)
         x = x + self.mlp(self.post_attention_layernorm(x))
         return x
 
@@ -167,41 +215,13 @@ class Qwen3(nn.Module):
         self.layers = nn.ModuleList(Block(cfg) for _ in range(cfg["num_hidden_layers"]))
         self.norm = RMSNorm(cfg["hidden_size"], cfg["rms_norm_eps"])
 
-    def forward(self, input_ids):
+    def forward(self, input_ids, cache, rows: slice, positions):
+        """input_ids and positions are both [rows, T]; rows selects cache rows."""
         x = self.embed_tokens(input_ids)
-        cos, sin = rope_tables(self.cfg, input_ids.shape[1], x.device)
-        for layer in self.layers:
-            x = layer(x, cos, sin)
+        cos, sin = rope_tables(self.cfg, positions)
+        for i, layer in enumerate(self.layers):
+            x = layer(x, cos, sin, cache, i, rows, positions)
         x = self.norm(x)
         # multiply by unembedding matrix which is embedding matrix but flipped
         return x @ self.embed_tokens.weight.T
 
-
-def main():
-    cfg = load_config()
-    model = Qwen3(cfg)
-    model.load_state_dict(load_weights(), strict=True)
-    model.eval().float()
-
-    ids = tokens()
-    cos, sin = rope_tables(cfg, ids.shape[1])
-    ref = load()
-
-    with torch.no_grad():
-        x = model.embed_tokens(ids)
-        check("embed_tokens", x)
-        check("layers.0.input_layernorm", model.layers[0].input_layernorm(x))
-        check("rotary_emb.0", cos)
-        check("rotary_emb.1", sin)
-        check("layers.0.self_attn",
-              model.layers[0].self_attn(model.layers[0].input_layernorm(x), cos, sin))
-        check("layers.0.mlp",
-              model.layers[0].mlp(ref["model.layers.0.post_attention_layernorm"]))
-        check("layers.0", model.layers[0](x, cos, sin))
-        check("layers.1", model.layers[1](ref["model.layers.0"], cos, sin))
-        # 36 layers of fp32 accumulation -- relative error is ~9e-05
-        check("logits", model(ids), rtol=1e-3, atol=1e-3)
-
-
-if __name__ == "__main__":
-    main()

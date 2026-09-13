@@ -2,6 +2,11 @@
 
 import { useRef, useState } from "react";
 
+// Inlined at build time, not read at runtime. Locally this comes from
+// frontend/.env.local; on Vercel from the project's environment variables,
+// where a missing value silently ships the localhost fallback below.
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
 type Message = { role: "user" | "assistant"; content: string };
 
 const EXAMPLES = [
@@ -35,17 +40,17 @@ export default function Page() {
     setInput("");
     setBusy(true);
     try {
-      const res = await fetch("http://localhost:8000/api/chat", {
+      const res = await fetch(`${API_URL}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text }),
+        body: JSON.stringify({ prompt: text }),
       });
       const data = await res.json();
       setMessages((m) => [...m, { role: "assistant", content: data.response }]);
     } catch {
       setMessages((m) => [
         ...m,
-        { role: "assistant", content: "Could not reach the server on :8000." },
+        { role: "assistant", content: `Could not reach the backend at ${API_URL}.` },
       ]);
     } finally {
       setBusy(false);
