@@ -1,3 +1,28 @@
+variable "subnet_id" {
+  description = <<-EOT
+    Which subnet to launch in. Null takes the first in the default VPC, which
+    is a coin flip: a "default VPC" can contain private subnets, and a private
+    one routes 0.0.0.0/0 through a NAT gateway. Outbound still works there, so
+    ECR pulls and model downloads succeed and everything looks fine -- but
+    inbound never arrives and the Elastic IP is decorative. Pin a subnet whose
+    route table points at an internet gateway.
+  EOT
+  type        = string
+  default     = null
+}
+
+variable "bucket_name" {
+  description = "Deploy bucket: docker-compose.yaml plus the weights tarball. S3 names are globally unique."
+  type        = string
+  default     = "socrates-llm"
+}
+
+variable "aws_profile" {
+  description = "Named profile from ~/.aws/config. Null uses the default credential chain. SSO profiles need `aws sso login --profile <name>` first."
+  type        = string
+  default     = null
+}
+
 variable "region" {
   description = "AWS region. Needs G-instance quota -- new accounts have zero."
   type        = string

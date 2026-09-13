@@ -28,7 +28,8 @@ terraform {
 }
 
 provider "aws" {
-  region = var.region
+  region  = var.region
+  profile = var.aws_profile
 
   default_tags {
     tags = {
@@ -108,11 +109,11 @@ resource "aws_ecr_lifecycle_policy" "tier" {
 
 # ------- S3 --------
 
-# docker-compose.yaml lives in the repo, not in a heredoc inside this module. Putting
-# it here rather than inlining it with file() means editing the stack is an
-# upload plus a restart, not an instance replacement.
+# Holds docker-compose.yaml and nothing else: 1 KB saying which images to run.
+# Weights are not here -- the container pulls them from HuggingFace, which is
+# faster than any upload from a laptop and keeps this bucket trivial.
 resource "aws_s3_bucket" "deploy" {
-  bucket        = "socrates-deploy-${data.aws_caller_identity.current.account_id}"
+  bucket        = var.bucket_name
   force_destroy = true
 }
 
@@ -213,13 +214,14 @@ resource "aws_security_group_rule" "api" {
 resource "aws_instance" "gpu" {
   ami                    = var.ami_id != null ? var.ami_id : data.aws_ami.gpu.id
   instance_type          = var.instance_type
-  subnet_id              = data.aws_subnets.default.ids[0]
+  subnet_id              = var.subnet_id != null ? var.subnet_id : data.aws_subnets.default.ids[0]
   vpc_security_group_ids = [aws_security_group.gpu.id]
   iam_instance_profile   = aws_iam_instance_profile.gpu.name
 
-  # An EIP is the stable address; without one the public IP changes on every
-  # stop/start, and you will be stopping this constantly to avoid the bill.
-  associate_public_ip_address = !var.use_elastic_ip
+  # Deliberately not setting associate_public_ip_address: the default subnet
+  # has map_public_ip_on_launch, so AWS reports true no matter what we ask for,
+  # and the attribute forces replacement -- every apply would rebuild the box.
+  # The EIP attaches on top and is what gives it a stable address.
 
   root_block_device {
     volume_size = var.root_volume_gb # DLAMI + an 8 GB checkpoint needs room

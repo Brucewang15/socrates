@@ -3,3 +3,4 @@ instance_type = "g5.xlarge"
 
 # Pin to a git sha from infra/push-to-ecr.sh rather than latest.
 image_tag = "latest"
+aws_profile = "bruce-dev"

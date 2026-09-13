@@ -14,9 +14,12 @@ import os
 from contextlib import asynccontextmanager
 
 import httpx
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+load_dotenv()   # .env at the repo root; real env vars still win
 
 # Same reason DEVICE is an env var: a container cannot reach localhost:8080.
 MODEL_URL = os.getenv("MODEL_URL", "http://localhost:8080")

@@ -15,9 +15,13 @@ decode batch.
 import threading
 import time
 
-import model.inference_cont as cont
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from dotenv import load_dotenv
+
+load_dotenv()   # must precede the import below: it reads DEVICE at import time
+
+import model.inference_cont as cont  # noqa: E402
+from fastapi import FastAPI, HTTPException  # noqa: E402
+from pydantic import BaseModel  # noqa: E402
 
 IDLE_S = 0.005
 TIMEOUT_S = 300

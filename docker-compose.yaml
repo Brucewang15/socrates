@@ -1,3 +1,15 @@
+# The two GPU-host tiers. REGISTRY and IMAGE_TAG come from a .env beside this
+# file; infra/prod/bootstrap.sh writes it on the instance.
+#
+# Weights are not here -- the container downloads them from HuggingFace into
+# the `weights` volume on first boot, so a fresh instance pays that once.
+#
+# The benches ship inside the model image at /app/bench with no service of
+# their own; they are a one-off, not something `up` should start:
+#
+#   docker compose stop model     # it holds the whole card
+#   docker compose run --rm -v ./results:/app/bench/results \
+#     model python bench/day_4/batching.py
 services:
   model:
     image: ${REGISTRY:-socrates}/model:${IMAGE_TAG:-latest}
@@ -6,19 +18,21 @@ services:
       dockerfile: model/Dockerfile
     restart: unless-stopped
     environment:
-      DEVICE: cuda
+      DEVICE: cpu          # TODO: cuda when the GPU instance lands
     volumes:
       # 8 GB of weights
       - weights:/weights
     expose:
       - "8080"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    # TODO: uncomment with the GPU instance; compose errors on a host
+    # with no nvidia runtime
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
 
   backend:
     image: ${REGISTRY:-socrates}/backend:${IMAGE_TAG:-latest}

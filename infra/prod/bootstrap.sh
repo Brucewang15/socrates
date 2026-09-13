@@ -23,9 +23,13 @@ if ! docker compose version >/dev/null 2>&1; then
   apt-get install -y docker-compose-plugin
 fi
 
-# compose reads .env from the directory holding the compose file
+# compose reads .env from the directory holding the compose file.
+#
+# REGISTRY carries the repository namespace, not just the host: push-to-ecr.sh
+# pushes to <host>/socrates/<tier>, and compose asks for $${REGISTRY}/<tier>.
+# Locally the compose default is a bare "socrates", which resolves the same way.
 cat > /opt/socrates/.env <<ENV
-REGISTRY=${registry}
+REGISTRY=${registry}/socrates
 IMAGE_TAG=${image_tag}
 ENV
 
