@@ -2,8 +2,9 @@
 
     uv run bench/day_5/plot_gpu_profile.py
 
-Input is bench/results/gpu_profile_summary.json, produced by
-infra/prod/analyze_trace.py from a torch.profiler Chrome trace captured on the
+Stage 3 of 3, and the only one that runs on your laptop. Input is
+bench/results/gpu_profile_summary.json, produced by bench/day_5/analyze_trace.py
+from a torch.profiler trace captured by bench/day_5/profile_decode.py on the
 deployed GPU host. The raw trace is 114 MB and stays on the box; this is the
 few-KB reduction of it.
 

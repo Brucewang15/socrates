@@ -21,6 +21,9 @@ MAX_NEW_TOKENS = 1024
 MAX_LEN = 2048
 DEVICE = os.getenv("DEVICE", "mps")
 DTYPE = torch.bfloat16
+# COMPILE=0 to fall back to eager decode -- worth having when torch.compile
+# graph-breaks on the cache bookkeeping, or when A/B-ing the speedup.
+COMPILE = os.getenv("COMPILE", "1") not in ("0", "false", "False")
 
 PROMPTS = [
     "how to make pizza?",
@@ -68,6 +71,29 @@ class Engine:
             model = Qwen3(self.cfg)
         model.load_state_dict(load_weights(), assign=True)
         self.model = model.eval().to(DEVICE)
+
+        # Prefill stays eager and decode gets compiled, on purpose.
+        #
+        # Decode is the same shape every step (T=1), runs thousands of times, and
+        # was measured at 105 ms wall for 15 ms of GPU work -- ~2,300 kernel
+        # launches per step, with the card idle 85% of the time. reduce-overhead
+        # wraps the graph in CUDA graphs, which is what collapses those launches.
+        #
+        # Prefill is a different length for every prompt, so compiling it would
+        # recompile per length for no gain: one big forward already amortises
+        # launch cost over the whole prompt.
+        #
+        # Only on CUDA. torch.compile on MPS is far less mature, and
+        # reduce-overhead means nothing without CUDA graphs.
+        self.eager_model = self.model
+        self.decode_model = self.model
+        if COMPILE and DEVICE.startswith("cuda"):
+            self.decode_model = torch.compile(
+                self.model, mode="reduce-overhead", dynamic=False
+            )
+            print("decode path compiled (mode=reduce-overhead); "
+                  "first steps pay compilation and graph capture", flush=True)
+
         self.cache = KVCache(MAX_BATCH, self.cfg["num_hidden_layers"],
                              self.cfg["num_key_value_heads"], self.cfg["head_dim"],
                              max_len=MAX_LEN, dtype=DTYPE, device=DEVICE)
@@ -94,7 +120,9 @@ class Engine:
         # the only thread that touches the device is the one running the loop
         ids = req.ids.to(DEVICE)
         positions = torch.arange(ids.shape[1], device=DEVICE)[None]
-        logits = self.model(ids, self.cache, rows, positions)
+        logits = self.eager_model(ids, self.cache, rows, positions)
+        # the cache no longer tracks this for us -- see KVCache.append
+        self.cache.lengths[row] = ids.shape[1]
         self.record(req, int(logits[:, -1].argmax(-1)))
 
     def admit(self) -> None:
@@ -113,7 +141,13 @@ class Engine:
         live = self.rows[:self.n_active]
         ids = torch.tensor([[r.output[-1]] for r in live], device=DEVICE)
         positions = torch.tensor([[self.cache.lengths[r.row]] for r in live], device=DEVICE)
-        logits = self.model(ids, self.cache, slice(0, self.n_active), positions)
+        logits = self.decode_model(ids, self.cache, slice(0, self.n_active), positions)
+        # every live row wrote exactly one slot; the cache leaves this to us
+        for req in live:
+            self.cache.lengths[req.row] += 1
+        # Do not hold on to `logits` past this point: under CUDA graphs the
+        # output buffer is reused by the next replay. tolist() copies to host
+        # here and now, which is safe; stashing the tensor would not be.
         for req, token in zip(live, logits[:, -1].argmax(-1).tolist()):
             self.record(req, int(token))
 

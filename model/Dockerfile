@@ -8,6 +8,14 @@
 # the host driver. A CUDA base would add ~2 GB of libraries torch ignores.
 FROM python:3.12-slim
 
+# torch.compile needs a C compiler at *run* time, not build time: Inductor emits
+# C++/Triton source on the first decode step and shells out to cc to build it.
+# Without this the compile raises InductorError, the serve thread dies, and
+# /api/chat hangs forever while /health still reports ok -- see model/server.py.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc g++ \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=ghcr.io/astral-sh/uv:0.12.13 /uv /usr/local/bin/uv
 
 WORKDIR /app

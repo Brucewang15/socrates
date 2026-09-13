@@ -82,6 +82,7 @@ class KVCache:
         self.keys = [torch.zeros(shape, dtype=dtype, device=device) for _ in range(n_layers)]
         self.values = [torch.zeros(shape, dtype=dtype, device=device) for _ in range(n_layers)]
         self.lengths = [0] * max_batch
+        self.max_len = max_len
 
     def reset(self, row: int) -> None:
         self.lengths[row] = 0
@@ -95,19 +96,32 @@ class KVCache:
         self.lengths[dst], self.lengths[src] = n, 0
 
     def append(self, layer_idx: int, rows: slice, k, v, positions):
-        """Write k, v at each row's own positions, return every row's live span.
+        """Write k, v at each row's own positions, return the whole window.
 
         k, v:      [rows, T, n_kv_heads, head_dim], the new tokens only
         positions: [rows, T], absolute position of each of those tokens
+
+        The read is the full max_len window, not just the filled part, and that
+        is deliberate. Slicing to `int(positions.max()) + 1` needs that value on
+        the host, which is a GPU->CPU sync in every layer -- 36 pipeline stalls
+        per decode step -- and it makes the returned shape grow by one every
+        step, so torch.compile retraces constantly and CUDA graphs never form.
+        A fixed window asks the device nothing and traces once.
+
+        Correctness is unaffected: Attention masks every slot whose index is past
+        that row's own position, so the unwritten tail is already discarded. The
+        cost is attending over max_len slots when fewer are live -- a small and,
+        importantly, constant amount of arithmetic.
+
+        `lengths` is the caller's to maintain. It chose these positions, so
+        reading them back off the device would be a round trip for something it
+        already knows.
         """
         K, V = self.keys[layer_idx], self.values[layer_idx]
         r = torch.arange(rows.start, rows.stop, device=k.device)[:, None]
         K[r, positions] = k
         V[r, positions] = v
-        end = int(positions.max()) + 1
-        for i, row in enumerate(range(rows.start, rows.stop)):
-            self.lengths[row] = int(positions[i, -1]) + 1
-        return K[rows, :end], V[rows, :end]
+        return K[rows, :self.max_len], V[rows, :self.max_len]
 
 
 class Attention(nn.Module):
