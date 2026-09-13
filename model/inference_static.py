@@ -3,7 +3,7 @@ import time
 from dataclasses import dataclass, field
 
 import torch
-from model.qwen_kv_seq import MODEL_ID, KVCache, Qwen3, load_config, load_weights
+from model.qwen.qwen_kv_seq import MODEL_ID, KVCache, Qwen3, load_config, load_weights
 from transformers import AutoTokenizer
 
 BATCH_SIZE = 4

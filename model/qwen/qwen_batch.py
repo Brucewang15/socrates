@@ -1,16 +1,16 @@
 """
 Ragged-batch forward pass plus a continuous-batching scheduler.
 
-    uv run -m model.qwen_batch            # equivalence check, tiny random weights
-    uv run -m model.qwen_batch --help     # knobs
+    uv run -m model.qwen.qwen_batch            # equivalence check, tiny random weights
+    uv run -m model.qwen.qwen_batch --help     # knobs
 
 Day 2 code is untouched. RMSNorm, MLP, rotate_half/apply_rope and the weight
-loaders are imported from model/qwen_kv.py; only the parts that genuinely had
+loaders are imported from model/qwen/qwen_kv.py; only the parts that genuinely had
 to change to serve several sequences at once are rewritten here. Module
 attribute names still match the checkpoint, so load_state_dict(strict=True)
 works exactly as before.
 
-Three things separate this from the batch-1 cache in model/qwen_kv.py:
+Three things separate this from the batch-1 cache in model/qwen/qwen_kv.py:
 
   1. the cache is [max_batch, max_len, n_kv_heads, head_dim] and every row
      carries its own length, so rows are *ragged* -- no padding to the longest;
@@ -40,7 +40,7 @@ from collections import deque
 from dataclasses import dataclass, field
 
 import torch
-from model.qwen_kv import MLP, MODEL_ID, RMSNorm, apply_rope, load_config, load_weights
+from model.qwen.qwen_kv import MLP, MODEL_ID, RMSNorm, apply_rope, load_config, load_weights
 from torch import nn
 
 __all__ = [
@@ -78,7 +78,7 @@ def sync(device: torch.device) -> None:
 def rope_tables(cfg: dict, positions: torch.Tensor):
     """cos, sin of shape [rows, T, head_dim] for arbitrary per-row positions.
 
-    model/qwen_kv.py builds one table for a contiguous [offset, offset+T) span
+    model/qwen/qwen_kv.py builds one table for a contiguous [offset, offset+T) span
     because it only ever has one sequence. Here every row sits at a different
     absolute position, so the table is indexed by the position of each token.
     """
@@ -218,7 +218,7 @@ class Block(nn.Module):
 
 
 class Qwen3Batch(nn.Module):
-    """Same weights as model/qwen_kv.Qwen3, ragged batch instead of batch 1."""
+    """Same weights as model/qwen/qwen_kv.Qwen3, ragged batch instead of batch 1."""
 
     def __init__(self, cfg: dict):
         super().__init__()
@@ -515,8 +515,8 @@ TINY = {
 
 
 def _reference_generate(cfg, model_kv, ids, n_new, stop_ids):
-    """Ground truth: the verified batch-1 path in model/qwen_kv.py."""
-    from model.qwen_kv import KVCache
+    """Ground truth: the verified batch-1 path in model/qwen/qwen_kv.py."""
+    from model.qwen.qwen_kv import KVCache
 
     cache = KVCache(cfg["num_hidden_layers"], cfg["num_key_value_heads"],
                     cfg["head_dim"], max_len=256, dtype=torch.float32, device="cpu")
@@ -536,18 +536,18 @@ def selftest(seed: int = 0, max_batch: int = 2) -> bool:
     """Ragged batching must reproduce the batch-1 path token for token.
 
     Random weights are enough: this checks the cache, the mask and the row
-    bookkeeping, not the arithmetic model/qwen.py already verified against HF.
+    bookkeeping, not the arithmetic model/qwen/qwen.py already verified against HF.
     """
     torch.manual_seed(seed)
     cfg = dict(TINY)
 
     batch_model = Qwen3Batch(cfg).eval().float()
-    from model.qwen_kv import Qwen3 as Qwen3KV
+    from model.qwen.qwen_kv import Qwen3 as Qwen3KV
 
     kv_model = Qwen3KV(cfg).eval().float()
     # same names as the checkpoint, so this is also a load_state_dict smoke test
     kv_model.load_state_dict(batch_model.state_dict(), strict=True)
-    print(f"state_dict transfers to model/qwen_kv.Qwen3: {len(batch_model.state_dict())} tensors")
+    print(f"state_dict transfers to model/qwen/qwen_kv.Qwen3: {len(batch_model.state_dict())} tensors")
 
     stop_ids: set[int] = set()      # no early exit, so lengths are exactly as asked
     specs = [(11, 24), (5, 6), (17, 15), (3, 9), (8, 20)]   # ragged prompts and lengths

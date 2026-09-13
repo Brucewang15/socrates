@@ -1,9 +1,9 @@
 """
-Exercise: add a KV cache to this working forward pass.
+From-scratch Qwen3-4B forward pass.
 
-    uv run -m model.qwen_kv     # generates with and without the cache, diffs them
+    uv run -m model.qwen.qwen        # diff every piece against HuggingFace
 
-Four TODOs, marked below. The uncached path must keep working unchanged.
+Module names match the checkpoint's tensor names so load_state_dict works directly.
 """
 
 import json
@@ -11,12 +11,12 @@ import math
 from pathlib import Path
 
 import torch
-from analysis.reference import tokens
+from analysis.reference import check, load, tokens
 from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
 from torch import nn
 
-CONFIG = Path(__file__).resolve().parent / "configs" / "qwen3-4b.json"
+CONFIG = Path(__file__).resolve().parents[1] / "configs" / "qwen3-4b.json"
 MODEL_ID = "Qwen/Qwen3-4B"
 
 
@@ -45,13 +45,12 @@ class RMSNorm(nn.Module):
         return x / rms * self.weight
 
 
-def rope_tables(cfg: dict, seq_len: int, device=None, offset: int = 0):
-    """cos, sin of shape [1, seq_len, head_dim], for positions [offset, offset+seq_len)."""
+def rope_tables(cfg: dict, seq_len: int, device=None):
+    """cos, sin of shape [1, seq_len, head_dim]."""
     hd, base = cfg["head_dim"], cfg["rope_theta"]
     # theta_k = base ** (-2k / hd), one per dimension pair
     inv_freq = 1.0 / (base ** (torch.arange(0, hd, 2, device=device).float() / hd))
-    pos = torch.arange(offset, offset + seq_len, device=device).float()
-    angles = torch.outer(pos, inv_freq)
+    angles = torch.outer(torch.arange(seq_len, device=device).float(), inv_freq)
     # Duplicated to full width so apply_rope is elementwise.
     angles = torch.cat([angles, angles], dim=-1)
     return angles.cos()[None], angles.sin()[None]
@@ -70,52 +69,6 @@ def apply_rope(x, cos, sin):
     return x * cos + rotate_half(x) * sin
 
 
-class KVCache:
-    """Post-RoPE keys and values, one entry per layer. Internal layout is up to you."""
-
-    def __init__(self, n_layers: int, n_kv_heads: int, head_dim: int, max_len: int = 40960, dtype=torch.bfloat16, device="mps"):
-        shape = (1, max_len, n_kv_heads, head_dim) # 1 = batch size for now. TODO
-        # one buffer per layer, [x] * n would ref a single tensor n times
-        self.keys = [torch.zeros(shape, dtype=dtype, device=device) for _ in range(n_layers)]
-        self.values = [torch.zeros(shape, dtype=dtype, device=device) for _ in range(n_layers)]
-        self.offset = 0
-
-    def __len__(self) -> int:
-        """Number of tokens currently cached."""
-        return self.offset
-
-    def append(self, layer_idx: int, k, v):
-        """Store this step's k and v for one layer/block.
-
-        k, v: [batch, T, n_kv_heads, head_dim], the new tokens only.
-        Returns the full cached (K, V) for that layer, same layout.
-        TODO: for now we're assuming batch is 1 because only serving 1 user at once
-        keys:
-        [ block 0
-            [ batch 0
-                [ token 0
-                    [ head 0
-                        [128 dim], [128 dim], ... 8 of them]
-                    ]
-                ]
-            ]
-        ]
-        """
-        # if self.keys[layer_idx] is None:
-        #     self.keys[layer_idx] = torch.tensor(k[0])
-        #     self.values[layer_idx] = torch.tensor(v[0])
-        # else:
-        #     # because of GQA a set of Q share one KV!
-        #     self.keys[layer_idx] = torch.cat([self.keys[layer_idx], k[0]]) # torch.cat creates a new copy. In pytorch memory is contiguous and cannot 'append'
-        #     self.values[layer_idx] = torch.cat([self.values[layer_idx], v[0]])
-        self.keys[layer_idx][:, self.offset:self.offset+k[0].shape[0]] = k
-        self.values[layer_idx][:, self.offset:self.offset+v[0].shape[0]] = v
-        return (self.keys[layer_idx][:, :self.offset+k[0].shape[0]], self.values[layer_idx][:, :self.offset+v[0].shape[0]])
-
-    def inc(self, num: int):
-        self.offset += num
-
-
 class Attention(nn.Module):
     def __init__(self, cfg: dict):
         super().__init__()
@@ -132,10 +85,10 @@ class Attention(nn.Module):
         self.q_norm = RMSNorm(self.hd, cfg["rms_norm_eps"])
         self.k_norm = RMSNorm(self.hd, cfg["rms_norm_eps"])
 
-    def forward(self, x, cos, sin, cache=None, layer_idx=0):
+    def forward(self, x, cos, sin):
+        # TODO: understand this later
         B, T, _ = x.shape
         group = self.n_heads // self.n_kv_heads          # 4 query heads share one kv head
-        past = len(cache) if cache is not None else 0
 
         # project, then split the packed output into heads
         q = self.q_proj(x).view(B, T, self.n_heads, self.hd)
@@ -146,13 +99,8 @@ class Attention(nn.Module):
         q = apply_rope(self.q_norm(q), cos, sin)
         k = apply_rope(self.k_norm(k), cos, sin)
 
-        
-        k, v = cache.append(layer_idx, k, v)
-
-        S = k.shape[1]
-
         # give every query head its group's k and v
-        k_full = torch.empty(B, S, self.n_heads, self.hd, dtype=k.dtype, device=k.device)
+        k_full = torch.empty(B, T, self.n_heads, self.hd, dtype=k.dtype, device=k.device)
         v_full = torch.empty_like(k_full)
         for h in range(self.n_heads):
             k_full[:, :, h] = k[:, :, h // group]
@@ -162,15 +110,13 @@ class Attention(nn.Module):
         q = q.transpose(1, 2)
         k_full = k_full.transpose(1, 2)
         v_full = v_full.transpose(1, 2)
-    
+
         # every query against every key
         scores = (q @ k_full.transpose(-2, -1)) / math.sqrt(self.hd)
 
-        # a token may not see the future. Query i sits at absolute position
-        # past + i; key j sits at j. Forbidden when j > past + i.
-        q_pos = torch.arange(past, past + T, device=x.device)[:, None]   # [T, 1]
-        k_pos = torch.arange(S, device=x.device)[None, :]                # [1, S]
-        scores = scores.masked_fill(k_pos > q_pos, float("-inf"))
+        # a token may not see the future
+        mask = torch.triu(torch.ones(T, T, dtype=torch.bool, device=x.device), diagonal=1)
+        scores = scores.masked_fill(mask, float("-inf"))
 
         # softmax along the key axis, then weight the values
         out = scores.softmax(dim=-1) @ v_full            # [B, heads, T, head_dim]
@@ -207,8 +153,8 @@ class Block(nn.Module):
         self.post_attention_layernorm = RMSNorm(cfg["hidden_size"], cfg["rms_norm_eps"])
         self.mlp = MLP(cfg)
 
-    def forward(self, x, cos, sin, cache, layer_idx=0):
-        x = x + self.self_attn(self.input_layernorm(x), cos, sin, cache, layer_idx)
+    def forward(self, x, cos, sin):
+        x = x + self.self_attn(self.input_layernorm(x), cos, sin)
         x = x + self.mlp(self.post_attention_layernorm(x))
         return x
 
@@ -221,15 +167,41 @@ class Qwen3(nn.Module):
         self.layers = nn.ModuleList(Block(cfg) for _ in range(cfg["num_hidden_layers"]))
         self.norm = RMSNorm(cfg["hidden_size"], cfg["rms_norm_eps"])
 
-    def forward(self, input_ids, cache=None):
+    def forward(self, input_ids):
         x = self.embed_tokens(input_ids)
-        past = len(cache) if cache is not None else 0
-        cos, sin = rope_tables(self.cfg, input_ids.shape[1], x.device, offset=past)
-        for i, layer in enumerate(self.layers):
-            x = layer(x, cos, sin, cache, i)
+        cos, sin = rope_tables(self.cfg, input_ids.shape[1], x.device)
+        for layer in self.layers:
+            x = layer(x, cos, sin)
         x = self.norm(x)
-        # increase offset
-        cache.inc(x.shape[1])
         # multiply by unembedding matrix which is embedding matrix but flipped
         return x @ self.embed_tokens.weight.T
 
+
+def main():
+    cfg = load_config()
+    model = Qwen3(cfg)
+    model.load_state_dict(load_weights(), strict=True)
+    model.eval().float()
+
+    ids = tokens()
+    cos, sin = rope_tables(cfg, ids.shape[1])
+    ref = load()
+
+    with torch.no_grad():
+        x = model.embed_tokens(ids)
+        check("embed_tokens", x)
+        check("layers.0.input_layernorm", model.layers[0].input_layernorm(x))
+        check("rotary_emb.0", cos)
+        check("rotary_emb.1", sin)
+        check("layers.0.self_attn",
+              model.layers[0].self_attn(model.layers[0].input_layernorm(x), cos, sin))
+        check("layers.0.mlp",
+              model.layers[0].mlp(ref["model.layers.0.post_attention_layernorm"]))
+        check("layers.0", model.layers[0](x, cos, sin))
+        check("layers.1", model.layers[1](ref["model.layers.0"], cos, sin))
+        # 36 layers of fp32 accumulation -- relative error is ~9e-05
+        check("logits", model(ids), rtol=1e-3, atol=1e-3)
+
+
+if __name__ == "__main__":
+    main()

@@ -26,7 +26,7 @@ from pathlib import Path
 import numpy as np
 from workload import RESULTS, load_model
 
-from model.qwen_batch import Engine, Request
+from model.qwen.qwen_batch import Engine, Request
 
 # Exactly the jobs in bench/day_3/batching.py, in the same order. The original
 # chart truncates its y-labels to 30 characters, which is why the last one reads

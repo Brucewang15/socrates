@@ -4,14 +4,24 @@ version = "0.1.0"
 description = "LLM inference from first principles"
 readme = "README.md"
 requires-python = ">=3.12"
+
+# Base set is the CPU tier: HTTP and nothing else. Keeping torch out of it is
+# what makes backend/Dockerfile a ~200 MB image instead of a ~6 GB one.
 dependencies = [
     "fastapi>=0.141.1",
-    "huggingface-hub>=1.30.0",
-    "matplotlib>=3.11.1",
-    "torch>=2.14.0",
-    "transformers>=5.17.0",
+    "httpx>=0.28",
+    "pydantic>=2",
     "uvicorn[standard]>=0.52.4",
 ]
+
+[project.optional-dependencies]
+model = [
+    "huggingface-hub>=1.30.0",
+    "safetensors>=0.4",
+    "torch>=2.14.0",
+    "transformers>=5.17.0",
+]
+bench = ["matplotlib>=3.11.1", "numpy>=2"]
 
 [build-system]
 requires = ["hatchling"]

@@ -1359,22 +1359,37 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
-    { name = "huggingface-hub" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.optional-dependencies]
+bench = [
     { name = "matplotlib" },
+    { name = "numpy" },
+]
+model = [
+    { name = "huggingface-hub" },
+    { name = "safetensors" },
     { name = "torch" },
     { name = "transformers" },
-    { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.141.1" },
-    { name = "huggingface-hub", specifier = ">=1.30.0" },
-    { name = "matplotlib", specifier = ">=3.11.1" },
-    { name = "torch", specifier = ">=2.14.0" },
-    { name = "transformers", specifier = ">=5.17.0" },
+    { name = "httpx", specifier = ">=0.28" },
+    { name = "huggingface-hub", marker = "extra == 'model'", specifier = ">=1.30.0" },
+    { name = "matplotlib", marker = "extra == 'bench'", specifier = ">=3.11.1" },
+    { name = "numpy", marker = "extra == 'bench'", specifier = ">=2" },
+    { name = "pydantic", specifier = ">=2" },
+    { name = "safetensors", marker = "extra == 'model'", specifier = ">=0.4" },
+    { name = "torch", marker = "extra == 'model'", specifier = ">=2.14.0" },
+    { name = "transformers", marker = "extra == 'model'", specifier = ">=5.17.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.52.4" },
 ]
+provides-extras = ["model", "bench"]
 
 [[package]]
 name = "starlette"

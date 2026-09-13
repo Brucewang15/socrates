@@ -28,7 +28,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from model.qwen_batch import (
+from model.qwen.qwen_batch import (
     MODEL_ID,
     Qwen3Batch,
     Request,

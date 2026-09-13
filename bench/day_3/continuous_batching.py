@@ -4,7 +4,7 @@
     uv run bench/day_3/continuous_batching.py --requests 32 --max-batch 8
 
 Same model, same cache, same kernels, same requests as static_batching.py. The
-only thing that changed is the admission rule in model/qwen_batch.Engine.admit:
+only thing that changed is the admission rule in model/qwen/qwen_batch.Engine.admit:
 rows are refilled every step instead of once per wave. So whatever gap the two
 scripts show is scheduling and nothing else.
 
@@ -37,7 +37,7 @@ from workload import (
     save,
 )
 
-from model.qwen_batch import Engine
+from model.qwen.qwen_batch import Engine
 
 STEM = "continuous_batching"
 

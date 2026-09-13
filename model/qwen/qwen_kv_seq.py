@@ -1,7 +1,7 @@
 """
 Exercise: add a KV cache to this working forward pass.
 
-    uv run -m model.qwen_kv     # generates with and without the cache, diffs them
+    uv run -m model.qwen.qwen_kv     # generates with and without the cache, diffs them
 
 Four TODOs, marked below. The uncached path must keep working unchanged.
 """
@@ -15,7 +15,7 @@ from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
 from torch import nn
 
-CONFIG = Path(__file__).resolve().parent / "configs" / "qwen3-4b.json"
+CONFIG = Path(__file__).resolve().parents[1] / "configs" / "qwen3-4b.json"
 MODEL_ID = "Qwen/Qwen3-4B"
 
 

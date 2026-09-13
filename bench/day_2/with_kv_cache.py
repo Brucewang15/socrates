@@ -10,7 +10,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from model.qwen_kv import MODEL_ID, KVCache, Qwen3, load_config, load_weights
+from model.qwen.qwen_kv import MODEL_ID, KVCache, Qwen3, load_config, load_weights
 from transformers import AutoTokenizer
 
 matplotlib.use("Agg")          # file output only, no GUI backend

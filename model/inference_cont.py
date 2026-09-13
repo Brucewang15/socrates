@@ -1,24 +1,25 @@
 """Continuous batching: a finished row is refilled from the queue the same step.
 
-    uv run -m backend.inference_cont
+    uv run -m model.inference_cont
 
 Prefill is sequential -- one request at a time, its own length, no padding.
 Decode runs every live row together.
 """
 
+import os
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
 
 import torch
-from model.qwen_kv_cont import MODEL_ID, KVCache, Qwen3, load_config, load_weights
+from model.qwen.qwen_kv_cont import MODEL_ID, KVCache, Qwen3, load_config, load_weights
 from transformers import AutoTokenizer
 
 MAX_BATCH = 4
 MAX_NEW_TOKENS = 1024
 MAX_LEN = 2048
-DEVICE = "mps"
+DEVICE = os.getenv("DEVICE", "mps")
 DTYPE = torch.bfloat16
 
 PROMPTS = [

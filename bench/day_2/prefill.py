@@ -8,7 +8,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import torch
-from model.qwen import Qwen3, load_config, load_weights
+from model.qwen.qwen import Qwen3, load_config, load_weights
 
 LENGTHS = [4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8126]
 OUT = Path(__file__).resolve().parents[1] / "results" / "prefill.png"

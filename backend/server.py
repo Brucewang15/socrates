@@ -1,56 +1,46 @@
-"""HTTP server for the socrates inference engine.
+"""CPU tier: the public API. Owns everything that is not a forward pass.
 
     uv run uvicorn backend.server:app --port 8000
 
-Engine.run() drains a queue and returns; a server needs the same steps on a
-loop that idles instead of exiting, so that loop lives here. One background
-thread owns the model, the cache and the rows. Request threads only call
-engine.submit() and block on the request's event, which is what lets several
-in-flight requests share a decode batch.
+Right now it validates a request and forwards it to the GPU tier at MODEL_URL.
+Auth, sessions, conversation history, rate limits and billing land here rather
+than in model/server.py, so the GPU tier stays swappable -- for vLLM, for
+Bedrock, for a second model -- without any of that moving with it.
+
+No streaming yet: this holds the request open and returns the whole string.
 """
 
-import threading
-import time
+import os
+from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from backend.inference_cont import MAX_BATCH, Engine
-
-IDLE_S = 0.005      # no live rows and nothing queued; wait before looking again
+# Same reason DEVICE is an env var: a container cannot reach localhost:8080.
+MODEL_URL = os.getenv("MODEL_URL", "http://localhost:8080")
+ORIGINS = ["http://localhost:3000"]
 TIMEOUT_S = 300
-MAX_QUEUE = 16 * MAX_BATCH   # bound the backlog; deque growth is the one real leak
 
-app = FastAPI(title="socrates")
+# One pooled client for the process
+client = httpx.AsyncClient(base_url=MODEL_URL, timeout=TIMEOUT_S)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    await client.aclose()
+
+
+app = FastAPI(title="socrates-backend", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-engine = Engine()
-
-
-def serve() -> None:
-    """Never returns. Engine.run()'s body, with an idle wait instead of an exit."""
-    while True:
-        if not (engine.pending or engine.n_active):
-            time.sleep(IDLE_S)
-            continue
-        engine.admit()
-        # a request whose first token is a stop token finishes during prefill
-        for req in [r for r in engine.rows[:engine.n_active] if r and r.done]:
-            engine.retire(req)
-        if engine.n_active:
-            engine.decode_step()
-            for req in [r for r in engine.rows[:engine.n_active] if r and r.done]:
-                engine.retire(req)
-
-
-threading.Thread(target=serve, daemon=True).start()
 
 
 class ChatRequest(BaseModel):
@@ -58,14 +48,25 @@ class ChatRequest(BaseModel):
 
 
 @app.post("/api/chat")
-def chat(req: ChatRequest) -> dict[str, str]:
+async def chat(req: ChatRequest) -> dict[str, str]:
     try:
-        r = engine.submit(req.prompt)
-    except ValueError as e:
-        raise HTTPException(status_code=413, detail=str(e)) from e
+        r = await client.post("/generate", json={"prompt": req.prompt})
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"model tier unreachable at {MODEL_URL}") from e
 
-    # the engine sets this in retire(); nothing here holds a reference to r
-    # afterwards, so a timed-out request is freed once the engine drops its row
-    if not r.event.wait(timeout=TIMEOUT_S):
-        raise HTTPException(status_code=504, detail="generation timed out")
-    return {"response": engine.tok.decode(r.output)}
+    if r.status_code != 200:
+        # pass the model tier's own 413/429/504 through rather than masking it
+        detail = r.json().get("detail", r.text) if r.headers.get("content-type", "").startswith("application/json") else r.text
+        raise HTTPException(status_code=r.status_code, detail=detail)
+
+    return {"response": r.json()["response"]}
+
+
+@app.get("/health")
+async def health() -> dict:
+    """Reports the downstream too: this tier is useless without it."""
+    try:
+        r = await client.get("/health", timeout=2.0)
+        return {"status": "ok", "model": r.json()}
+    except httpx.RequestError:
+        return {"status": "degraded", "model": None}
