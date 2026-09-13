@@ -1,13 +1,24 @@
 """Profile one decode step of the continuous-batching engine on the GPU.
 
-Run as a one-off container on the GPU host, with the serving model stopped:
+Stage 1 of 3. Runs *inside the model container on the GPU host*, not on your
+laptop — it needs CUDA and the weights volume.
 
-    docker compose stop model
-    docker compose run --rm -v /tmp/prof:/out model python /out/profile_decode.py
-    docker compose start model
+    # from your laptop, ship it up (the instance role can read this bucket)
+    aws s3 cp bench/day_5/profile_decode.py s3://socrates-llm/ --profile management
 
-Writes /out/trace.json (Chrome/Perfetto trace), /out/table_cpu.txt,
+    # on the host, via: aws ssm start-session --target <instance-id>
+    aws s3 cp s3://socrates-llm/profile_decode.py /tmp/prof/profile_decode.py
+    cd /opt/socrates
+    docker compose stop model          # it holds the whole card
+    docker compose run --rm -v /tmp/prof:/out -e PROF_OUT=/out \
+      model python /out/profile_decode.py
+    docker compose start model         # put the service back
+
+Writes /out/trace.json (Chrome/Perfetto trace, ~114 MB), /out/table_cpu.txt,
 /out/table_cuda.txt and /out/summary.json.
+
+Then stage 2 is bench/day_5/analyze_trace.py on the host, and stage 3 is
+bench/day_5/plot_gpu_profile.py on your laptop.
 """
 
 import json

@@ -1,10 +1,20 @@
 """Reduce a 114 MB PyTorch Chrome trace to a few KB of plottable summary.
 
-Runs on the GPU host (the trace is too big to ship, and the instance role has
-no s3:PutObject). Prints one line of JSON to stdout, small enough to come back
-through SSM command output.
+Stage 2 of 3. Runs on the GPU host, at host level (plain python3, no container
+needed). The trace is too big to ship and the instance role has no
+s3:PutObject, so the reduction happens where the file already is and only the
+summary travels back.
 
-    python3 analyze_trace.py /tmp/prof/trace.json
+    # from your laptop
+    aws s3 cp bench/day_5/analyze_trace.py s3://socrates-llm/ --profile management
+
+    # on the host
+    aws s3 cp s3://socrates-llm/analyze_trace.py /tmp/prof/analyze_trace.py
+    python3 /tmp/prof/analyze_trace.py /tmp/prof/trace.json > /tmp/prof/summary_plot.json
+
+Copy the JSON between the JSON_BEGIN/JSON_END markers into
+bench/results/gpu_profile_summary.json, then plot it with
+bench/day_5/plot_gpu_profile.py.
 
 Emitted:
   meta   window bounds, GPU busy vs wall, kernel and launch counts
