@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 #
-# Build the three images and push them to ECR.
+# Build the GPU-host images and push them to ECR. The frontend is not here:
+# it deploys to Vercel from the repo, so it has no image.
 #
-#   ./infra/push-to-ecr.sh                  # all three
-#   ./infra/push-to-ecr.sh model backend    # just these
+#   ./push-to-ecr.sh                  # model and backend
+#   ./push-to-ecr.sh model            # just one
 #
-#   AWS_REGION=us-east-1 ./infra/push-to-ecr.sh
+#   AWS_REGION=us-east-1 ./push-to-ecr.sh
 #
 # Each image is tagged twice: with the git sha, which is what a deployment
 # should actually pin, and with latest, which is for convenience only.
@@ -22,13 +23,9 @@ TAG="$(git rev-parse --short HEAD)"
 PREFIX="socrates"
 
 TIERS=("$@")
-[ ${#TIERS[@]} -eq 0 ] && TIERS=(model backend frontend)
+[ ${#TIERS[@]} -eq 0 ] && TIERS=(model backend)
 
-# Frontend bakes this into its bundle at build time; point it at the backend's
-# public address for a real deploy.
-API_URL="${NEXT_PUBLIC_API_URL:-http://localhost:8000}"
-
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")"     # repo root; build contexts are relative to it
 
 if ! git diff --quiet HEAD 2>/dev/null; then
   echo "warning: working tree is dirty, so tag ${TAG} will not match what is in it" >&2
@@ -47,16 +44,12 @@ for tier in "${TIERS[@]}"; do
     || aws ecr create-repository --region "$AWS_REGION" --repository-name "$repo" \
          --image-scanning-configuration scanOnPush=true >/dev/null
 
-  build_args=()
-  [ "$tier" = "frontend" ] && build_args=(--build-arg "NEXT_PUBLIC_API_URL=${API_URL}")
-
   echo "==> building ${repo}:${TAG}"
   docker build \
     --platform linux/amd64 \
     -f "${tier}/Dockerfile" \
     -t "${uri}:${TAG}" \
     -t "${uri}:latest" \
-    "${build_args[@]}" \
     .
 
   echo "==> pushing ${repo}"
