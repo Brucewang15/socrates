@@ -19,9 +19,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-load_dotenv()   # .env at the repo root; real env vars still win
+load_dotenv()
 
-# Same reason DEVICE is an env var: a container cannot reach localhost:8080.
 MODEL_URL = os.getenv("MODEL_URL", "http://localhost:8080")
 ORIGINS = ["http://localhost:3000"]
 TIMEOUT_S = 300
@@ -51,7 +50,7 @@ class ChatRequest(BaseModel):
 
 
 @app.post("/api/chat")
-async def chat(req: ChatRequest) -> dict[str, str]:
+async def chat(req: ChatRequest) -> dict:
     try:
         r = await client.post("/generate", json={"prompt": req.prompt})
     except httpx.RequestError as e:
@@ -62,7 +61,12 @@ async def chat(req: ChatRequest) -> dict[str, str]:
         detail = r.json().get("detail", r.text) if r.headers.get("content-type", "").startswith("application/json") else r.text
         raise HTTPException(status_code=r.status_code, detail=detail)
 
-    return {"response": r.json()["response"]}
+    body = r.json()
+    return {
+        "response": body["response"], 
+        "timing": body.get("timing", {}),
+        "output_tokens": body.get("output_tokens")
+    }
 
 
 @app.get("/health")

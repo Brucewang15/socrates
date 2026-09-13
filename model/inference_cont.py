@@ -50,6 +50,9 @@ class Request:
     done: bool = False
     row: int = -1
     submitted: float = field(default_factory=time.perf_counter)
+    # set when the request is given a row: submitted->admitted is queue wait,
+    # which the scheduler owns; admitted->first_token is prefill, which it does not
+    admitted: float = 0.0
     first_token: float = 0.0
     finished: float = 0.0
     # set when the request retires, so a serving thread can block on one
@@ -101,6 +104,7 @@ class Engine:
             self.cache.reset(row)
             self.rows[row] = req
             req.row = row
+            req.admitted = time.perf_counter()
             self.n_active += 1
             self.prefill(req, row)
 

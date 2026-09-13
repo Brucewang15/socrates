@@ -17,11 +17,11 @@ import time
 
 from dotenv import load_dotenv
 
-load_dotenv()   # must precede the import below: it reads DEVICE at import time
+load_dotenv()
 
-import model.inference_cont as cont  # noqa: E402
-from fastapi import FastAPI, HTTPException  # noqa: E402
-from pydantic import BaseModel  # noqa: E402
+import model.inference_cont as cont
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 
 IDLE_S = 0.005
 TIMEOUT_S = 300
@@ -70,10 +70,18 @@ def generate(req: GenerateRequest) -> dict:
     # afterwards, so a timed-out request is freed once the engine drops its row
     if not r.event.wait(timeout=TIMEOUT_S):
         raise HTTPException(status_code=504, detail="generation timed out")
+    n = len(r.output)
     return {
         "response": engine.tok.decode(r.output),
         "prompt_tokens": int(r.ids.shape[1]),
-        "output_tokens": len(r.output),
+        "output_tokens": n,
+        "timing": {
+            "queue_s": r.admitted - r.submitted,
+            "prefill_s": r.first_token - r.admitted,
+            "decode_s": r.finished - r.first_token,
+            "total_s": r.finished - r.submitted,
+            "itl_s": (r.finished - r.first_token) / max(n, 1),
+        },
     }
 
 
