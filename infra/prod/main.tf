@@ -234,6 +234,17 @@ resource "aws_instance" "gpu" {
     http_endpoint = "enabled"
   }
 
+  # Spot when var.use_spot, on-demand otherwise. Defaults inside a spot launch
+  # are the sane ones: max price = the on-demand price, so you are never billed
+  # more than on-demand, and interruption terminates rather than stops.
+  dynamic "instance_market_options" {
+    for_each = var.use_spot ? [1] : []
+
+    content {
+      market_type = "spot"
+    }
+  }
+
   user_data_replace_on_change = true
   user_data = templatefile("${path.module}/bootstrap.sh", {
     region    = var.region
@@ -244,9 +255,23 @@ resource "aws_instance" "gpu" {
 
   tags = { Name = "socrates-gpu" }
 
+  # Without this, a capacity-starved pool does not fail -- the provider retries
+  # InsufficientInstanceCapacity internally and apply appears to hang for
+  # 20+ minutes. Five minutes is long enough to ride out a transient shortage
+  # and short enough to tell you to pick another AZ or instance type.
+  timeouts {
+    create = "5m"
+  }
+
   lifecycle {
     # a newer DLAMI publishes every few days; do not replace the box for it
     ignore_changes = [ami]
+
+    # Stand the replacement up before tearing the old one down. Without this a
+    # replacement destroys first, so a create that fails -- no GPU quota, no
+    # spot capacity in the AZ -- leaves you with nothing running and an
+    # unattached EIP. The old and new instances bill together for a few minutes.
+    create_before_destroy = true
   }
 }
 

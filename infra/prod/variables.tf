@@ -75,6 +75,18 @@ variable "api_ingress_cidrs" {
   default     = []
 }
 
+variable "use_spot" {
+  description = <<-EOT
+    Launch as a Spot instance. On-demand G quota is zero on a fresh account
+    while Spot quota often is not, so this may be the only way to get a GPU
+    before a quota increase lands. The tradeoff is real: AWS can reclaim the
+    instance with two minutes' notice, and the containers come back only when
+    something relaunches it. Leave false for anything you expect to stay up.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "use_elastic_ip" {
   description = "Allocate a stable address. ~$3.60/mo, and required if a domain or a nip.io hostname points here."
   type        = bool

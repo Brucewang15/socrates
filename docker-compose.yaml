@@ -18,21 +18,19 @@ services:
       dockerfile: model/Dockerfile
     restart: unless-stopped
     environment:
-      DEVICE: cpu          # TODO: cuda when the GPU instance lands
+      DEVICE: cuda
     volumes:
       # 8 GB of weights
       - weights:/weights
     expose:
       - "8080"
-    # TODO: uncomment with the GPU instance; compose errors on a host
-    # with no nvidia runtime
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
   backend:
     image: ${REGISTRY:-socrates}/backend:${IMAGE_TAG:-latest}
