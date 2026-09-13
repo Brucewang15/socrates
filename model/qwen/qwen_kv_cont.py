@@ -158,29 +158,27 @@ class Attention(nn.Module):
 
         S = k.shape[1]
 
-        # give every query head its group's k and v
-        k_full = torch.empty(B, S, self.n_heads, self.hd, dtype=k.dtype, device=k.device)
-        v_full = torch.empty_like(k_full)
-        for h in range(self.n_heads):
-            k_full[:, :, h] = k[:, :, h // group]
-            v_full[:, :, h] = v[:, :, h // group]
-
-        # heads become a batch axis: [B, heads, T, head_dim]
+        # heads become a batch axis: [B, heads, T, hd] and [B, kv_heads, S, hd]
         q = q.transpose(1, 2)
-        k_full = k_full.transpose(1, 2)
-        v_full = v_full.transpose(1, 2)
-    
-        # every query against every key
-        scores = (q @ k_full.transpose(-2, -1)) / math.sqrt(self.hd)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
 
-        # a token may not see the future, and a row may not see slots it has
-        # not written. Both are "key index > this token's own position".
+        # A token may not see the future, and a row may not see slots it has not
+        # written. Both are "key index > this token's own position". SDPA reads
+        # True as *keep*, the opposite of masked_fill, hence <= rather than >.
         k_pos = torch.arange(S, device=x.device)                          # [S]
-        mask = k_pos > positions[:, :, None]                              # [rows, T, S]
-        scores = scores.masked_fill(mask[:, None], float("-inf"))
+        keep = (k_pos <= positions[:, :, None])[:, None]                   # [B, 1, T, S]
 
-        # softmax along the key axis, then weight the values
-        out = scores.softmax(dim=-1) @ v_full            # [B, heads, T, head_dim]
+        # One fused call replaces expand + two matmuls + masked_fill + softmax.
+        #
+        # enable_gqa lets one kv head serve `group` query heads *inside* the
+        # kernel. The previous version allocated [B, S, n_heads, hd] and copied
+        # each kv head into its group, which once S became a fixed max_len was
+        # 56% of all GPU time: 2048 slots copied per layer, per step, to serve a
+        # single token of queries. Nothing is materialised now.
+        out = nn.functional.scaled_dot_product_attention(
+            q, k, v, attn_mask=keep, enable_gqa=True,
+        )                                                # [B, heads, T, hd]
 
         # concatenate heads, project back to the residual width
         out = out.transpose(1, 2).reshape(B, T, self.n_heads * self.hd)

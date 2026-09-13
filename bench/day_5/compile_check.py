@@ -27,6 +27,8 @@ the same tokens as eager.
 
 import torch
 
+from model.qwen.qwen_kv import KVCache as KVCache1
+from model.qwen.qwen_kv import Qwen3 as Qwen3Batch1
 from model.qwen.qwen_kv_cont import KVCache, Qwen3, rope_tables
 
 TINY = {
@@ -98,9 +100,45 @@ def explain(fn, *args):
     return e.graph_count, e.graph_break_count, e.op_count, reasons
 
 
+def reference_tokens(cfg, state, row):
+    """Ground truth from the day-2 batch-1 path in model/qwen/qwen_kv.py.
+
+    Independent of the ragged cache and of SDPA, so it catches a change in the
+    attention math -- something comparing compiled against eager cannot do,
+    since both would be wrong together.
+    """
+    m = Qwen3Batch1(cfg).eval().float()
+    m.load_state_dict(state, strict=True)
+    cache = KVCache1(cfg["num_hidden_layers"], cfg["num_key_value_heads"],
+                     cfg["head_dim"], max_len=64, dtype=torch.float32, device="cpu")
+    ids = torch.arange(PROMPT_LEN)[None] % TINY["vocab_size"] + row
+    out = []
+    with torch.no_grad():
+        step = ids
+        for _ in range(STEPS + 1):
+            tok = int(m(step, cache)[:, -1].argmax(-1))
+            out.append(tok)
+            step = torch.tensor([[tok]])
+    return out
+
+
 def main() -> None:
     print(f"torch {torch.__version__}, {TINY['num_hidden_layers']} layers, "
           f"{ROWS} rows\n")
+
+    # ---- 0. does the ragged path still agree with the day-2 batch-1 path? ---
+    cfg, model, cache = build()
+    state = model.state_dict()
+    want_ref = [reference_tokens(cfg, state, row) for row in range(ROWS)]
+    got_ref = decode(model, cache, prefill(model, cache, ROWS), STEPS)
+    ref_ok = got_ref == want_ref
+    print(f"{'ok  ' if ref_ok else 'FAIL'} ragged+SDPA matches model/qwen/qwen_kv.py "
+          f"(batch-1 reference)")
+    if not ref_ok:
+        for i, (w, g) in enumerate(zip(want_ref, got_ref)):
+            if w != g:
+                print(f"     row {i}: want {w}\n            got  {g}")
+    print()
 
     # ---- what Dynamo makes of each granularity -----------------------------
     cfg, model, cache = build()
@@ -152,8 +190,8 @@ def main() -> None:
                 if w != g:
                     print(f"       row {i}: want {w}\n              got  {g}")
 
-    print("\nPASS" if ok else "\nFAIL")
-    raise SystemExit(0 if ok else 1)
+    print("\nPASS" if (ok and ref_ok) else "\nFAIL")
+    raise SystemExit(0 if (ok and ref_ok) else 1)
 
 
 if __name__ == "__main__":
