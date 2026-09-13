@@ -2,6 +2,9 @@
 
 import { useRef, useState } from "react";
 
+// Inlined at build time, not read at runtime. Locally this comes from
+// frontend/.env.local; on Vercel from the project's environment variables,
+// where a missing value silently ships the localhost fallback below.
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 type Message = { role: "user" | "assistant"; content: string };

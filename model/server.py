@@ -19,7 +19,6 @@ import model.inference_cont as cont
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-
 IDLE_S = 0.005
 TIMEOUT_S = 300
 MAX_QUEUE = 16 * cont.MAX_BATCH

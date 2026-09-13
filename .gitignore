@@ -6,6 +6,8 @@ __pycache__/
 
 # secrets
 .env
+# next reads these automatically; .env.example is the committed template
+.env*.local
 
 # model weights -- never commit these
 *.safetensors

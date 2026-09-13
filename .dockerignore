@@ -9,3 +9,7 @@ bench/results
 **/*.pt
 **/*.npz
 **/*.png
+
+# env files are per-environment, never baked into an image
+**/.env
+**/.env.local
