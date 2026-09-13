@@ -20,6 +20,13 @@ RUN uv sync --frozen --no-install-project --extra model
 
 COPY model/ model/
 
+# The benches run the same engine against the same weights, so they ride in
+# this image rather than getting one of their own -- numpy is already here via
+# torch, and plots.py (the only matplotlib consumer) runs on your laptop from
+# the .npz. bench/results is dockerignored: results are produced, not shipped.
+COPY bench/ bench/
+COPY analysis/ analysis/
+
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONPATH=/app \
     DEVICE=cuda \

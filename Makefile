@@ -24,12 +24,12 @@ install:
 	uv sync --all-extras
 	npm --prefix frontend install
 
+# Both GPU-host images, from the same docker-compose.yaml the instance runs.
+# Building works anywhere; running needs an NVIDIA host.
 images:
-	docker build -f model/Dockerfile    -t socrates-model    .
-	docker build -f backend/Dockerfile  -t socrates-backend  .
-	docker build -f frontend/Dockerfile -t socrates-frontend .
+	docker compose build
 
 push:
-	./infra/push-to-ecr.sh
+	./push-to-ecr.sh
 
 .PHONY: dev model backend frontend install images push

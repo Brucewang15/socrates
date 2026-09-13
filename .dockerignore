@@ -13,3 +13,6 @@ bench/results
 # env files are per-environment, never baked into an image
 **/.env
 **/.env.local
+
+# deployment descriptor, not image content
+docker-compose.yaml

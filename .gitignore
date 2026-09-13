@@ -30,3 +30,23 @@ next-env.d.ts
 
 # macos
 .DS_Store
+
+# terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+# real values, often account ids and CIDRs -- the .example is the template
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+# .terraform.lock.hcl is deliberately NOT ignored: commit it so provider
+# versions are identical on every machine
