@@ -174,6 +174,35 @@ resource "aws_iam_role_policy" "deploy_read" {
   policy = data.aws_iam_policy_document.deploy_read.json
 }
 
+# Push, not just pull. The managed ReadOnly policy above covers
+# GetAuthorizationToken and pulls; these five are what `docker push` needs.
+#
+# Why the instance needs it at all: building an image on the box only puts it in
+# that box's local store, so it dies with the box -- and on Spot that is hours,
+# not months. Pushing from a laptop instead means an emulated linux/amd64 build
+# and a 6.3 GB upload over home broadband; from here it is native and on AWS's
+# own network. Scoped to these two repositories rather than using
+# AmazonEC2ContainerRegistryPowerUser, which would grant push to every repo in
+# the account.
+data "aws_iam_policy_document" "ecr_push" {
+  statement {
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:InitiateLayerUpload",
+      "ecr:UploadLayerPart",
+      "ecr:CompleteLayerUpload",
+      "ecr:PutImage",
+    ]
+    resources = [for r in aws_ecr_repository.tier : r.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "ecr_push" {
+  name   = "socrates-ecr-push"
+  role   = aws_iam_role.gpu.id
+  policy = data.aws_iam_policy_document.ecr_push.json
+}
+
 resource "aws_iam_instance_profile" "gpu" {
   name = "socrates-gpu"
   role = aws_iam_role.gpu.name
