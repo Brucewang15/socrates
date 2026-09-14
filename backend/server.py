@@ -141,18 +141,13 @@ async def benchmark() -> dict:
 
     max_batch = meta.get("max_batch") or 1
 
-    # Warm up at full width before the clock starts. One prompt is not enough:
-    # torch.compile traces per distinct row count, so a single request only
-    # covers n_active=1 and the real run then recompiles at 4 rows -- which cost
-    # the first four requests ~47s each and made their ITL meaningless. Firing
-    # max_batch at once with one long prompt among short ones drains the batch
-    # through every row count (4 -> 3 -> 2 -> 1), tracing each.
-    warm = ["say hi"] * max(max_batch - 1, 1) + ["explain recursion briefly"]
+    # One throwaway request before the clock starts. The decode graphs for every
+    # row count are compiled at model-tier startup (Engine.warmup), which is the
+    # only place that can do it reliably -- this is just to confirm the tier
+    # answers and to keep any first-request lazy work out of the measurement.
     try:
-        await asyncio.gather(*(
-            client.post("/generate", json={"prompt": p}, timeout=BENCH_TIMEOUT_S)
-            for p in warm
-        ))
+        await client.post("/generate", json={"prompt": "say hi"},
+                          timeout=BENCH_TIMEOUT_S)
     except httpx.RequestError:
         pass                      # a failed warmup is not worth failing the run
 
