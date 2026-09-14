@@ -80,7 +80,10 @@ def generate(req: GenerateRequest) -> dict:
             "prefill_s": r.first_token - r.admitted,
             "decode_s": r.finished - r.first_token,
             "total_s": r.finished - r.submitted,
-            "itl_s": (r.finished - r.first_token) / max(n, 1),
+            # n tokens have n-1 gaps between them, and first_token is already
+            # the first one, so decode_s spans n-1 intervals. Dividing by n
+            # understates the real inter-token latency by 1/n.
+            "itl_s": (r.finished - r.first_token) / max(n - 1, 1),
         },
     }
 

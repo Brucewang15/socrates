@@ -65,18 +65,26 @@ export function Timeline({ requests }: { requests: Req[] }) {
 
 export function Occupancy({ data, maxBatch }: { data: Result["occupancy"]; maxBatch: number }) {
   const c = useSeries();
+  // queued requests hold no row, so they are drawn on their own axis rather than
+  // stacked into the row count -- otherwise the total exceeds maxBatch
+  const queuedMax = Math.max(...data.map((d) => d.queued), 1);
   return (
     <ResponsiveContainer width="100%" height={260}>
       <AreaChart data={data} margin={{ left: 8, right: 16, top: 8 }}>
         <CartesianGrid stroke={GRID} vertical={false} />
         <XAxis dataKey="t" tick={AXIS} stroke={GRID} tickFormatter={(v) => `${v.toFixed(0)}s`} />
-        <YAxis domain={[0, maxBatch]} allowDecimals={false} tick={AXIS} stroke={GRID}
+        <YAxis yAxisId="rows" domain={[0, maxBatch]} allowDecimals={false} tick={AXIS} stroke={GRID}
                label={{ value: "rows", angle: -90, position: "insideLeft", style: AXIS }} />
+        <YAxis yAxisId="q" orientation="right" domain={[0, queuedMax]} allowDecimals={false}
+               tick={AXIS} stroke={GRID}
+               label={{ value: "queued", angle: 90, position: "insideRight", style: AXIS }} />
         <Tooltip {...tip("")} />
         <Legend wrapperStyle={{ fontSize: 12 }} />
-        <Area type="stepAfter" dataKey="held" stroke={c.held} fill={c.held}
-              fillOpacity={0.5} name="held" />
-        <Area type="stepAfter" dataKey="generating" stroke={c.decode} fill={c.decode}
+        <Area yAxisId="q" type="stepAfter" dataKey="queued" stroke={c.queue} fill={c.queue}
+              fillOpacity={0.18} name="queued (right axis, holds no row)" />
+        <Area yAxisId="rows" type="stepAfter" dataKey="held" stroke={c.held} fill={c.held}
+              fillOpacity={0.5} name="held (admitted, incl. prefill)" />
+        <Area yAxisId="rows" type="stepAfter" dataKey="generating" stroke={c.decode} fill={c.decode}
               fillOpacity={0.75} name="generating" />
       </AreaChart>
     </ResponsiveContainer>

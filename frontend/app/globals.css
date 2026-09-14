@@ -140,3 +140,54 @@ body {
   color: var(--text); font-size: 13px; text-decoration: none;
 }
 .bench-link:hover { background: #2b2c2f; }
+
+
+/* --- metric explainers ---------------------------------------------------- */
+/* Hover *or* keyboard focus: the trigger is a real button with
+   aria-describedby, so the arithmetic is reachable without a pointer. */
+.formula { position: relative; display: inline-block; margin-left: 5px; }
+
+.formula-trigger {
+  width: 14px; height: 14px; padding: 0; border-radius: 50%;
+  border: 1px solid var(--hairline); background: transparent;
+  color: var(--muted); font-size: 9px; line-height: 1; cursor: help;
+  font-family: inherit; vertical-align: middle;
+}
+.formula-trigger:hover, .formula-trigger:focus-visible {
+  color: var(--text-primary); border-color: var(--text-secondary);
+}
+.formula-trigger:focus-visible { outline: 2px solid var(--text-secondary); outline-offset: 1px; }
+
+.formula-body {
+  position: absolute; left: 0; top: calc(100% + 6px); z-index: 40;
+  width: 290px; padding: 10px 12px; border-radius: 8px;
+  background: var(--surface-2); border: 1px solid var(--hairline);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+  font-size: 11.5px; line-height: 1.45; color: var(--text-secondary);
+  font-variant-numeric: normal; text-align: left; white-space: normal;
+  opacity: 0; visibility: hidden; transition: opacity 90ms ease;
+}
+.formula:hover .formula-body,
+.formula-trigger:focus-visible + .formula-body { opacity: 1; visibility: visible; }
+
+.formula-what { display: block; color: var(--text-primary); margin-bottom: 6px; }
+.formula-math {
+  display: block; padding: 5px 7px; margin-bottom: 6px; border-radius: 5px;
+  background: var(--surface-1); color: var(--text-primary);
+  font-size: 11px; white-space: pre-wrap;
+}
+.formula-caveat { display: block; color: var(--muted); }
+.formula-body:last-child .formula-caveat { margin-bottom: 0; }
+
+/* keep the last columns' tooltips on screen */
+.bench th:nth-last-child(-n + 3) .formula-body { left: auto; right: 0; }
+
+/* --- output-length buckets ------------------------------------------------ */
+.bucket {
+  display: inline-block; padding: 1px 6px; border-radius: 999px;
+  font-size: 10px; letter-spacing: 0.02em; border: 1px solid var(--hairline);
+  color: var(--text-secondary);
+}
+.bucket-short { border-color: #6f6e68; }
+.bucket-medium { border-color: #d95926; }
+.bucket-long { border-color: #3987e5; }

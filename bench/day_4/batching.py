@@ -46,11 +46,37 @@ JOBS = [
 ]
 
 
+WARMUP = ["say hi", "what is 2+2?", "name a color", "capital of France?"]
+
+
+def warm(engine, policy, args) -> None:
+    """Burn the one-time costs before the clock starts.
+
+    The continuous engine compiles its decode step on first use -- tens of
+    seconds, and again for each distinct row count as rows drain. The static
+    engine does not compile at all, so timing that compilation inside the run
+    both understates continuous throughput and hands static an unearned win.
+    cuBLAS autotuning and lazy CUDA init are smaller versions of the same thing,
+    which is why static gets a warmup too.
+
+    Enough prompts to reach max_batch, so every row count that the real run will
+    trace has already been traced.
+    """
+    prompts = (WARMUP * 8)[:max(args.max_batch, 2)]
+    if policy == "static":
+        engine.run_batch([static.Request(p) for p in prompts])
+    else:
+        for p in prompts:
+            engine.submit(p)
+        engine.run()
+
+
 def run_static(args):
     static.BATCH_SIZE = args.max_batch
     static.MAX_NEW_TOKENS = args.max_new_tokens
     static.DEVICE = args.device
     engine = static.Engine()
+    warm(engine, "static", args)
 
     reqs = [static.Request(p) for p in JOBS]
     t0 = time.perf_counter()
@@ -67,6 +93,7 @@ def run_continuous(args):
     cont.MAX_NEW_TOKENS = args.max_new_tokens
     cont.DEVICE = args.device
     engine = cont.Engine()
+    warm(engine, "continuous", args)
 
     # static encodes inside run_batch, after its t0; start the clock before
     # submit() so both pay tokenization inside the timed region
@@ -120,8 +147,13 @@ def score(reqs, wall, tok, cfg, args, policy) -> dict:
             pad += int((w.max() - w).sum())
 
     computed = sum(getattr(r, "steps", 0) for r in reqs)
+    # A row is occupied from admission, not from its first token -- prefill holds
+    # it too. cont sets `admitted`; static admits a whole wave, so its first
+    # token is the closest marker it has.
+    admitted = np.array([getattr(r, "admitted", r.first_token) - r.submitted
+                         for r in reqs])
     t, live = occupancy(response, own, wall)
-    _, held = occupancy(response, delivered, wall)
+    _, held = occupancy(admitted, delivered, wall)
 
     return {
         "tokens": tokens, "response": response, "own": own, "delivered": delivered,
