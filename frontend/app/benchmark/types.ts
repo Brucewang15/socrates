@@ -24,6 +24,7 @@ export type Result = {
     prompts: number;
     output_tokens: number;
     wall_s: number;
+    itl_sample: number;
   };
   headline: {
     throughput_tps: number;

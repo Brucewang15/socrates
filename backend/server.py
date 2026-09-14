@@ -139,11 +139,20 @@ async def benchmark() -> dict:
     except httpx.RequestError as e:
         raise HTTPException(status_code=502, detail=f"model tier unreachable at {MODEL_URL}") from e
 
-    # One throwaway request before the clock starts. The first decode step after
-    # a restart pays torch.compile -- tens of seconds -- and counting that as
-    # generation time makes throughput look far worse than it is.
+    max_batch = meta.get("max_batch") or 1
+
+    # Warm up at full width before the clock starts. One prompt is not enough:
+    # torch.compile traces per distinct row count, so a single request only
+    # covers n_active=1 and the real run then recompiles at 4 rows -- which cost
+    # the first four requests ~47s each and made their ITL meaningless. Firing
+    # max_batch at once with one long prompt among short ones drains the batch
+    # through every row count (4 -> 3 -> 2 -> 1), tracing each.
+    warm = ["say hi"] * max(max_batch - 1, 1) + ["explain recursion briefly"]
     try:
-        await client.post("/generate", json={"prompt": "hi"}, timeout=BENCH_TIMEOUT_S)
+        await asyncio.gather(*(
+            client.post("/generate", json={"prompt": p}, timeout=BENCH_TIMEOUT_S)
+            for p in warm
+        ))
     except httpx.RequestError:
         pass                      # a failed warmup is not worth failing the run
 
@@ -180,7 +189,6 @@ async def benchmark() -> dict:
 
     wall = time.perf_counter() - t0
     tokens = sum(r["output_tokens"] for r in rows)
-    max_batch = meta.get("max_batch") or 1
 
     # Three series, and the distinction matters. A queued request holds no row --
     # it sits in the engine's pending deque -- so counting it as "held" made this
@@ -199,9 +207,12 @@ async def benchmark() -> dict:
                           "queued": queued})
 
     mean_live = sum(o["generating"] for o in occupancy) / len(occupancy)
-    # Per stream, so the aggregate above cannot be mistaken for what one caller
-    # sees. With N rows sharing a decode step, aggregate is roughly N x this.
-    itl_mean = sum(r["itl_s"] for r in rows) / len(rows)
+    # ITL is a per-gap measure, so a request that emitted one token has none and
+    # would otherwise report its whole decode span as a single interval. Use the
+    # median rather than the mean too: one such outlier at 46s is enough to make
+    # a mean meaningless.
+    itls = [r["itl_s"] for r in rows if r["output_tokens"] >= 2]
+    itl_p50 = _pct(itls, 50)
 
     return {
         "context": {
@@ -210,17 +221,20 @@ async def benchmark() -> dict:
             "prompts": len(rows),
             "output_tokens": tokens,
             "wall_s": wall,
+            "itl_sample": len(itls),
         },
         "headline": {
             "throughput_tps": tokens / wall,
-            "per_stream_tps": 1 / itl_mean if itl_mean else 0.0,
+            # Per stream, so aggregate cannot be mistaken for what one caller
+            # sees. With N rows sharing a decode step, aggregate is roughly N x.
+            "per_stream_tps": 1 / itl_p50 if itl_p50 else 0.0,
             "ttft_p99_s": _pct([r["ttft_s"] for r in rows], 99),
-            "itl_p50_s": _pct([r["itl_s"] for r in rows], 50),
+            "itl_p50_s": itl_p50,
             "occupancy": mean_live / max_batch,
         },
         "percentiles": {
             "ttft_s": _spread([r["ttft_s"] for r in rows]),
-            "itl_s": _spread([r["itl_s"] for r in rows]),
+            "itl_s": _spread(itls),
             "latency_s": _spread([r["total_s"] for r in rows]),
         },
         "requests": rows,

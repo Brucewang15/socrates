@@ -55,9 +55,9 @@ export const FORMULAS: Record<string, FormulaProps> = {
   },
   per_stream_tps: {
     what: "What one caller experiences once their tokens start flowing.",
-    formula: "1 / mean(itl_s)",
+    formula: "1 / itl_p50",
     caveat:
-      "With N rows sharing a decode step, aggregate throughput is roughly N x this. A single prompt can never beat it.",
+      "Median, not mean: a request that emits one token has no gap to measure and would otherwise report its whole decode span as a single interval, which a mean cannot survive. With N rows sharing a decode step, aggregate throughput is roughly N x this.",
   },
   ttft_p99_s: {
     what: "Time to first token, worst case. Queue wait plus prefill.",
@@ -69,7 +69,7 @@ export const FORMULAS: Record<string, FormulaProps> = {
     what: "Median seconds between consecutive tokens, once generating.",
     formula: "p50( decode_s / (output_tokens - 1) )",
     caveat:
-      "n tokens have n-1 gaps, and the first token is already counted in TTFT. Dividing by n instead of n-1 would understate this by 1/n.",
+      "n tokens have n-1 gaps, and the first token is already counted in TTFT. Requests that emitted fewer than 2 tokens are excluded — they have no gap to measure.",
   },
   occupancy: {
     what: "How full the batch was, averaged over the run.",
