@@ -18,8 +18,9 @@ from contextlib import asynccontextmanager
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from pydantic import BaseModel
 
 load_dotenv()
@@ -58,6 +59,13 @@ async def lifespan(app: FastAPI):
     await client.aclose()
 
 
+# RED at the public edge. The model tier reports the engine's own view; this
+# is what a client actually experienced, proxy hop included.
+EDGE = Histogram("socrates_edge_seconds", "end to end at the API tier",
+                 buckets=(.5, 1, 2, 5, 10, 30, 60, 120, 300))
+EDGE_REQUESTS = Counter("socrates_edge_requests_total", "api calls",
+                        ["route", "status"])
+
 app = FastAPI(title="socrates-backend", lifespan=lifespan)
 
 app.add_middleware(
@@ -74,15 +82,22 @@ class ChatRequest(BaseModel):
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest) -> dict:
+    # auth, rate limit and history load go here, before the prompt is assembled
+    started = time.perf_counter()
     try:
         r = await client.post("/generate", json={"prompt": req.prompt})
     except httpx.RequestError as e:
+        EDGE_REQUESTS.labels("chat", "502").inc()
         raise HTTPException(status_code=502, detail=f"model tier unreachable at {MODEL_URL}") from e
 
     if r.status_code != 200:
         # pass the model tier's own 413/429/504 through rather than masking it
+        EDGE_REQUESTS.labels("chat", str(r.status_code)).inc()
         detail = r.json().get("detail", r.text) if r.headers.get("content-type", "").startswith("application/json") else r.text
         raise HTTPException(status_code=r.status_code, detail=detail)
+
+    EDGE.observe(time.perf_counter() - started)
+    EDGE_REQUESTS.labels("chat", "200").inc()
 
     body = r.json()
     return {
@@ -193,3 +208,8 @@ async def benchmark() -> dict:
         "requests": rows,
         "occupancy": occupancy,
     }
+
+
+@app.get("/metrics")
+def metrics() -> Response:
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)

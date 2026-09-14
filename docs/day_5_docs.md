@@ -18,3 +18,45 @@ Throughput = tok/s. But per-step cost grows as generation goes on, because the K
 TTFT = time to first token = queue wait + prefill. Not just prefill -- if the batch is full the request sits in the deque first, and that wait is the scheduler's fault while prefill is the model's. That's why /generate returns queue_s and prefill_s separately instead of one TTFT number.
 
 Currently our tps is 11 tokens/s.
+
+
+Monitoring:
+
+Prometheus: scrapes a configured endpoint every N seconds. The endpoint returns flat data and prometheus stores time-series data. However, prometheus might miss data in between the scrapes.
+
+If the app's memory is flat, where does the time series come from? Prometheus builds it. The app only stores one number, no history. Prometheus snapshots the odometer every 15s and stamps each reading with a timestamp, so the sequence lives in Prometheus, rate(output_tokens_total[30s]) is just (402-190)/30; we only ever said "402".
+
+Events: a discrete and countable event. A request finished, a token was generated, an error was raised. Contrast with state, which is a condition right now. State has a value at every instant, including between scrapes.
+
+Counter: a number that only goes up, incremented by our code at the moment the event happens. It cannot miss an event because the increment is inside the request handler -- the scrape doesn't detect anything, it reads a total that was already accumulated. A turnstile can't miss a person; the person turns it. Counters must be monotonic so rate() can differentiate them, and so a restart (counter drops to 0) is detectable rather than looking like a negative rate.
+
+Gauge: current state, read at scrape time. Ours use set_function, so the lambda runs when Prometheus calls, not when the value changes. This is why gauges CAN miss: if queue_depth hits 50 at t=1.5 and is back to 2 by t=1.6, nobody was looking and there is no trace of it anywhere. Scraping faster doesn't fix this in general -- there is always a spike shorter than the interval. The fix is to convert state into events: requests_total{outcome="queue_full"} cannot miss the overflow even though queue_depth can.
+
+Histogram: n_buckets + 2 floats. One counter per bucket, plus _sum and _count. Buckets are cumulative, so observe(0.66) increments every bucket at or above 0.66. That's how a 3.1s request stays visible forever without being stored individually. Percentiles are interpolated from bucket rates at query time, over a window -- there is no global p95, only p95 over the last 5 minutes. Use Histogram not Summary, because summaries compute quantiles per-instance and can't be aggregated across replicas.
+
+Why memory is flat: the registry stores one current value per series, not one row per observation. A counter incremented a billion times is still one float. So app memory is O(series), not O(observations) or O(time) -- ours is ~67 series, a few KB, constant forever. The only way it grows is cardinality: every distinct label value is a new series. outcome/route/status are fine (bounded); user_id or prompt text is not (unbounded, and it blows up Prometheus too -- 100k users would be ~400k series, ~69 GB of disk). Per-request detail belongs in logs, not metrics.
+
+History lives in Prometheus, bounded by --storage.tsdb.retention.time=15d. 67 series at 15s scrapes is ~12 MB on disk.
+
+Instrumentation overhead: measured 2.91 us per request for our 5 observes + 3 counter incs. Against a 1.76s request that's 0.0002%. Only matters if you instrument a hot loop (per decode step would be 36 layers x N tokens) or use unbounded labels.
+
+Grafana: frontend for reading prometheus. Stores dashboards and users, no metric data -- it fires PromQL at Prometheus on every panel refresh.
+
+
+Running it locally:
+
+    make dev                        # model :8080, backend :8000, frontend :3000
+    curl localhost:8080/metrics     # prometheus text format
+    curl localhost:8000/metrics     # edge RED metrics
+
+Prometheus and Grafana are compose services, and dcgm-exporter needs an NVIDIA host, so the full stack only comes up on the GPU box:
+
+    docker compose up -d prometheus grafana     # skips dcgm-exporter, works on a Mac
+    open http://localhost:9090                  # prometheus, check Status > Targets
+    open http://localhost:3001                  # grafana, dashboard is auto-provisioned
+
+Scraping from a container to a host-run uvicorn needs host.docker.internal instead of model:8080 in monitoring/prometheus.yml. On the EC2 box everything is on the compose network so the service names work as written, and neither port is in the security group -- reach them over SSM port forwarding:
+
+    aws ssm start-session --profile bruce-dev --region us-east-1 --target <id> \
+      --document-name AWS-StartPortForwardingSession \
+      --parameters '{"portNumber":["3001"],"localPortNumber":["3001"]}'

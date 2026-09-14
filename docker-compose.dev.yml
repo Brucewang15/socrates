@@ -1,0 +1,10 @@
+# Overlay for local dev, applied explicitly so it never reaches the instance:
+#   docker compose -f docker-compose.yaml -f docker-compose.dev.yml up -d prometheus grafana
+services:
+  prometheus:
+    volumes:
+      - ./monitoring/prometheus.dev.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prom:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # Docker Desktop provides this; Linux does not
