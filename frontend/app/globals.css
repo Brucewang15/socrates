@@ -134,6 +134,36 @@ body {
 .bench td.prompt { font-variant-numeric: normal; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bench .recharts-wrapper { overflow: visible; }
 
+/* Chart controls live outside Recharts' fixed-height SVG. This keeps legends
+   and axis captions from competing for the same bottom pixels. */
+.chart-frame { min-width: 0; margin-top: 12px; }
+.chart-toolbar {
+  min-height: 32px; margin-bottom: 8px;
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+}
+.chart-legend { display: flex; flex-wrap: wrap; gap: 7px 16px; min-width: 0; padding-top: 5px; }
+.chart-legend-item {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--muted); font-size: 11px; line-height: 1.25;
+}
+.chart-swatch { width: 10px; height: 10px; border-radius: 2px; flex: 0 0 auto; }
+.chart-plot { min-width: 0; }
+.chart-axis-caption {
+  margin-top: 2px; text-align: center;
+  color: var(--muted); font-size: 11px; line-height: 1.4;
+}
+/* More specific than `.bench button`, deliberately: chart downloads are
+   secondary controls, not the primary Run benchmark action. */
+.bench .chart-download {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px;
+  min-height: 28px; padding: 5px 9px; border-radius: 6px;
+  border: 1px solid var(--hairline); background: transparent;
+  color: var(--muted); font-size: 11px; line-height: 1;
+}
+.bench .chart-download:hover:not(:disabled) {
+  border-color: var(--text-secondary); background: var(--input); color: var(--text);
+}
+
 .bench-link {
   display: flex; align-items: center; gap: 8px;
   padding: 10px 12px; border-radius: 6px;
@@ -145,18 +175,25 @@ body {
 /* --- metric explainers ---------------------------------------------------- */
 /* Hover *or* keyboard focus: the trigger is a real button with
    aria-describedby, so the arithmetic is reachable without a pointer. */
-.formula { position: relative; display: inline-block; margin-left: 5px; }
+.formula {
+  position: relative; display: inline-flex; margin-left: 5px;
+  vertical-align: -2px; line-height: 1;
+}
 
-.formula-trigger {
-  width: 14px; height: 14px; padding: 0; border-radius: 50%;
-  border: 1px solid var(--hairline); background: transparent;
-  color: var(--muted); font-size: 9px; line-height: 1; cursor: help;
-  font-family: inherit; vertical-align: middle;
+/* `.bench button` used to win the cascade and turn this 14px circle into a
+   padded blue pill. Include `.bench` so every primary-button declaration is
+   explicitly reset, then use flex centering for the glyph. */
+.bench .formula-trigger {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; min-width: 16px; height: 16px; min-height: 16px; padding: 0;
+  border-radius: 50%; border: 1px solid var(--hairline); background: transparent;
+  color: var(--muted); font: 600 10px/1 ui-sans-serif, system-ui, sans-serif;
+  cursor: help;
 }
-.formula-trigger:hover, .formula-trigger:focus-visible {
-  color: var(--text-primary); border-color: var(--text-secondary);
+.bench .formula-trigger:hover, .bench .formula-trigger:focus-visible {
+  background: var(--input); color: var(--text-primary); border-color: var(--text-secondary);
 }
-.formula-trigger:focus-visible { outline: 2px solid var(--text-secondary); outline-offset: 1px; }
+.bench .formula-trigger:focus-visible { outline: 2px solid var(--text-secondary); outline-offset: 2px; }
 
 .formula-body {
   position: absolute; left: 0; top: calc(100% + 6px); z-index: 40;
@@ -173,7 +210,7 @@ body {
 .formula-what { display: block; color: var(--text-primary); margin-bottom: 6px; }
 .formula-math {
   display: block; padding: 5px 7px; margin-bottom: 6px; border-radius: 5px;
-  background: var(--surface-1); color: var(--text-primary);
+  background: #22232a; color: var(--text-primary);
   font-size: 11px; white-space: pre-wrap;
 }
 .formula-caveat { display: block; color: var(--muted); }
@@ -191,3 +228,15 @@ body {
 .bucket-short { border-color: #6f6e68; }
 .bucket-medium { border-color: #d95926; }
 .bucket-long { border-color: #3987e5; }
+
+@media (max-width: 720px) {
+  .bench { padding: 20px 16px 48px; }
+  .bench-head { flex-direction: column; align-items: stretch; }
+  .bench-actions { justify-content: flex-end; }
+  .tiles { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+  .grid-2 { grid-template-columns: minmax(0, 1fr); }
+  .panel { padding: 12px; }
+  .chart-toolbar { flex-direction: column; gap: 8px; }
+  .chart-legend { padding-top: 0; }
+  .bench .chart-download { align-self: flex-start; }
+}
