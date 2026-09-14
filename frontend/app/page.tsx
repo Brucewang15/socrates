@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+import { Logo } from "./logo";
 import { useRef, useState } from "react";
 
 // Inlined at build time, not read at runtime. Locally this comes from
@@ -64,14 +66,22 @@ export default function Page() {
         <button className="new-chat" onClick={() => setMessages([])}>
           <span>+</span> New chat
         </button>
-        <div className="sidebar-footer">socrates · v0</div>
+        <div className="sidebar-bottom">
+          <Link href="/benchmark" className="bench-link">
+            <span>▤</span> Benchmark
+          </Link>
+          <div className="sidebar-footer">
+            <Logo size={18} />
+            <span className="brand">Socrates</span>
+          </div>
+        </div>
       </aside>
 
       <main className="main">
         <div className="messages">
           {messages.length === 0 ? (
             <div className="empty">
-              <h1>socrates</h1>
+              <h1>Socrates</h1>
               <div className="columns">
                 <div className="column">
                   <h2>

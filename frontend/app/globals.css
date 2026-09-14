@@ -30,10 +30,13 @@ body {
   cursor: pointer; text-align: left; width: 100%;
 }
 .new-chat:hover { background: #2b2c2f; }
+.sidebar-bottom { margin-top: auto; }
 .sidebar-footer {
-  margin-top: auto; border-top: 1px solid rgba(255,255,255,.2);
-  padding: 12px; font-size: 13px; color: var(--muted);
+  display: flex; align-items: center; gap: 9px;
+  border-top: 1px solid rgba(255,255,255,.2);
+  padding: 12px; font-size: 14px; color: var(--text);
 }
+.brand { font-weight: 700; letter-spacing: -0.01em; }
 
 .main { flex: 1; display: flex; flex-direction: column; }
 .messages { flex: 1; overflow-y: auto; }
@@ -84,3 +87,56 @@ body {
   max-width: 760px; margin: 12px auto 0; text-align: center;
   font-size: 12px; color: var(--muted);
 }
+
+/* benchmark */
+.bench {
+  --surface-2: #2a2b32;
+  --hairline: #3a3b43;
+  --text-primary: var(--text);
+  --text-secondary: var(--muted);
+  flex: 1;
+  overflow-y: auto;
+  padding: 32px 40px 64px;
+  background: var(--main);
+  color: var(--text);
+}
+.bench-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; }
+.bench h1 { font-size: 22px; margin: 0 0 4px; }
+.bench h2 { font-size: 14px; margin: 0 0 4px; font-weight: 600; }
+.bench .muted { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+.bench .error { color: #e66767; font-size: 13px; }
+.bench-actions { display: flex; gap: 8px; align-items: center; }
+.bench button {
+  background: #2a78d6; color: #fff; border: 0; border-radius: 6px;
+  padding: 8px 14px; font-size: 13px; cursor: pointer;
+}
+.bench button:disabled { opacity: 0.55; cursor: default; }
+.bench .ghost {
+  color: var(--muted); font-size: 13px; text-decoration: none;
+  padding: 8px 10px; border-radius: 6px;
+}
+.bench .ghost:hover { background: var(--input); }
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin: 20px 0 12px; }
+.tile { background: var(--surface-2); border: 1px solid var(--hairline); border-radius: 10px; padding: 14px 16px; }
+.tile-label { display: block; font-size: 12px; color: var(--muted); }
+.tile-value { display: block; font-size: 26px; font-variant-numeric: tabular-nums; margin: 2px 0 4px; }
+.tile-value small { font-size: 13px; color: var(--muted); margin-left: 3px; }
+.tile-note { display: block; font-size: 11px; color: var(--muted); line-height: 1.35; }
+
+.panel { background: var(--surface-2); border: 1px solid var(--hairline); border-radius: 10px; padding: 16px; margin-top: 16px; }
+.grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+.grid-2 .panel { margin-top: 16px; }
+
+.bench table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.bench th { text-align: left; color: var(--muted); font-weight: 500; padding: 6px 8px; border-bottom: 1px solid var(--hairline); }
+.bench td { padding: 6px 8px; border-bottom: 1px solid var(--hairline); }
+.bench td.prompt { font-variant-numeric: normal; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bench .recharts-wrapper { overflow: visible; }
+
+.bench-link {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; border-radius: 6px;
+  color: var(--text); font-size: 13px; text-decoration: none;
+}
+.bench-link:hover { background: #2b2c2f; }

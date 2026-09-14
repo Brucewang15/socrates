@@ -1,0 +1,34 @@
+export type Req = {
+  i: number;
+  prompt: string;
+  prompt_tokens: number;
+  output_tokens: number;
+  sent: number;
+  queue_s: number;
+  prefill_s: number;
+  decode_s: number;
+  total_s: number;
+  itl_s: number;
+  ttft_s: number;
+};
+
+export type Spread = { p50: number; p95: number; p99: number };
+
+export type Result = {
+  context: {
+    device: string;
+    max_batch: number;
+    prompts: number;
+    output_tokens: number;
+    wall_s: number;
+  };
+  headline: {
+    throughput_tps: number;
+    ttft_p99_s: number;
+    itl_p50_s: number;
+    occupancy: number;
+  };
+  percentiles: { ttft_s: Spread; itl_s: Spread; latency_s: Spread };
+  requests: Req[];
+  occupancy: { t: number; generating: number; held: number }[];
+};
