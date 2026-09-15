@@ -6,7 +6,7 @@ COMPOSE_DEV   := docker compose -f docker-compose.yaml -f docker-compose.dev.yml
 # frontend -> backend -> model, plus prometheus/grafana scraping the two servers.
 # dcgm-exporter is skipped: it needs an NVIDIA host.
 dev: monitoring
-	@echo "prometheus http://localhost:9090   grafana http://localhost:3001/d/socrates"
+	@echo "prometheus http://localhost:9090   grafana http://localhost:3001"
 	@trap "kill 0; $(COMPOSE_DEV) stop prometheus grafana >/dev/null 2>&1" INT TERM EXIT; \
 	uv run uvicorn model.server:app --port $(MODEL_PORT) & \
 	MODEL_URL=$(MODEL_URL) uv run uvicorn backend.server:app --reload --port $(BACKEND_PORT) & \

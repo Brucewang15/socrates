@@ -71,8 +71,8 @@ services:
     depends_on: [prometheus]
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-socrates}
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SERVER_ROOT_URL: https://monitoring.socrates.pianofi.ca/
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
     volumes:
       - grafana:/var/lib/grafana
     ports:

@@ -54,6 +54,7 @@ Prometheus and Grafana are compose services, and dcgm-exporter needs an NVIDIA h
     docker compose up -d prometheus grafana     # skips dcgm-exporter, works on a Mac
     open http://localhost:9090                  # prometheus, check Status > Targets
     open http://localhost:3001                  # grafana, dashboard is auto-provisioned
+                                                # in prod it is monitoring.socrates.pianofi.ca
 
 Scraping from a container to a host-run uvicorn needs host.docker.internal instead of model:8080 in monitoring/prometheus.yml. On the EC2 box everything is on the compose network so the service names work as written, and neither port is in the security group -- reach them over SSM port forwarding:
 
