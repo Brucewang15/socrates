@@ -45,5 +45,54 @@ services:
     ports:
       - "8000:8000"
 
+  prometheus:
+    image: ${REGISTRY:-socrates}/prometheus:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: monitoring/Dockerfile.prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      # Whichever limit is hit first wins. The size cap is the real guard:
+      # retention.time alone does not bound disk if cardinality grows.
+      - --storage.tsdb.retention.time=1d
+      - --storage.tsdb.retention.size=512MB
+    volumes:
+      - prom:/prometheus
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: ${REGISTRY:-socrates}/grafana:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: monitoring/Dockerfile.grafana
+    restart: unless-stopped
+    depends_on: [prometheus]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-socrates}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - grafana:/var/lib/grafana
+    ports:
+      - "3001:3000"
+
+  # NVIDIA's own telemetry. nvidia-smi cannot report SM occupancy or DRAM
+  # activity; DCGM reads the hardware counters.
+  dcgm-exporter:
+    image: nvidia/dcgm-exporter:4.1.1-4.0.4-ubuntu22.04
+    restart: unless-stopped
+    cap_add: [SYS_ADMIN]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, utility]
+
 volumes:
   weights:
+  prom:
+  grafana:

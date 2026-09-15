@@ -1,0 +1,7 @@
+# Built from the repo root: docker build -f monitoring/Dockerfile.prometheus .
+#
+# Config is baked rather than bind-mounted so the instance needs nothing but
+# docker-compose.yaml. The image tag is the config version. Local dev still
+# mounts prometheus.dev.yml over this -- a mount beats a baked file.
+FROM prom/prometheus:v3.1.0
+COPY monitoring/prometheus.yml monitoring/alerts.yml /etc/prometheus/

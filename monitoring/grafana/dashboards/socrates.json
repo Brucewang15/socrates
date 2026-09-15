@@ -1,0 +1,303 @@
+{
+  "uid": "socrates",
+  "title": "Socrates inference",
+  "tags": [
+    "llm"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Queue depth vs capacity",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "socrates_queue_depth",
+          "legendFormat": "waiting",
+          "refId": "A"
+        },
+        {
+          "expr": "socrates_active_rows",
+          "legendFormat": "generating",
+          "refId": "B"
+        },
+        {
+          "expr": "socrates_max_batch",
+          "legendFormat": "capacity",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "description": "The autoscaling signal. GPU utilisation is near 100% during decode regardless of load, so it cannot tell you this."
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Batch occupancy",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "socrates_active_rows / socrates_max_batch",
+          "legendFormat": "occupancy",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "description": "Rows generating over MAX_BATCH. The gap is capacity paid for and not used."
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "TTFT",
+      "gridPos": {
+        "x": 0,
+        "y": 7,
+        "w": 8,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Queue wait plus prefill -- what the caller waits before seeing anything.",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(socrates_ttft_seconds_bucket[5m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.90, sum by (le) (rate(socrates_ttft_seconds_bucket[5m])))",
+          "legendFormat": "p90",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(socrates_ttft_seconds_bucket[5m])))",
+          "legendFormat": "p95",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Queue wait",
+      "gridPos": {
+        "x": 8,
+        "y": 7,
+        "w": 8,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Time before a row freed up. The scheduler's half of TTFT: fix with MAX_BATCH or more replicas.",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(socrates_queue_seconds_bucket[5m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.90, sum by (le) (rate(socrates_queue_seconds_bucket[5m])))",
+          "legendFormat": "p90",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(socrates_queue_seconds_bucket[5m])))",
+          "legendFormat": "p95",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "ITL",
+      "gridPos": {
+        "x": 16,
+        "y": 7,
+        "w": 8,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Seconds per generated token. Rises with batch size and context length.",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(socrates_itl_seconds_bucket[5m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.90, sum by (le) (rate(socrates_itl_seconds_bucket[5m])))",
+          "legendFormat": "p90",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(socrates_itl_seconds_bucket[5m])))",
+          "legendFormat": "p95",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Throughput",
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 24,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "rate(socrates_output_tokens_total[1m])",
+          "legendFormat": "generated (decode)",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(socrates_prompt_tokens_total[1m])",
+          "legendFormat": "prefilled (prompt)",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix:tok/s"
+        },
+        "overrides": []
+      },
+      "description": "Both are tokens/sec but not comparable as speed: decode is one forward pass per token (memory-bound), prefill ingests the whole prompt in one pass (compute-bound). A rate, so percentiles do not apply."
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "GPU utilisation & memory",
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 12,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "DCGM_FI_DEV_GPU_UTIL",
+          "legendFormat": "SM util %",
+          "refId": "A"
+        },
+        {
+          "expr": "DCGM_FI_DEV_FB_USED / (DCGM_FI_DEV_FB_USED + DCGM_FI_DEV_FB_FREE) * 100",
+          "legendFormat": "VRAM %",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "description": "SM util saturates during decode; treat VRAM and the bandwidth panel as the real signals."
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "GPU memory bandwidth (MBU)",
+      "gridPos": {
+        "x": 12,
+        "y": 21,
+        "w": 12,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "DCGM_FI_PROF_DRAM_ACTIVE * 100",
+          "legendFormat": "DRAM active %",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "description": "Fraction of cycles the memory interface was actively transferring -- MBU as the hardware measures it. Decode is memory-bound, so this is the ceiling: near 100% means no code change helps, low means overhead-bound."
+    }
+  ]
+}

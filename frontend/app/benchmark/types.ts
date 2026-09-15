@@ -15,7 +15,7 @@ export type Req = {
   ttft_s: number;
 };
 
-export type Spread = { p50: number; p95: number; p99: number };
+export type Spread = { p50: number; p90: number; p95: number };
 
 export type Result = {
   context: {
@@ -29,7 +29,7 @@ export type Result = {
   headline: {
     throughput_tps: number;
     per_stream_tps: number;
-    ttft_p99_s: number;
+    ttft_p95_s: number;
     itl_p50_s: number;
     occupancy: number;
   };

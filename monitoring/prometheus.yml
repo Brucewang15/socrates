@@ -1,0 +1,19 @@
+global:
+  # 2s: a benchmark run is ~50s and queue spikes last a few hundred ms, so 15s
+  # samples miss the shape entirely. Cost is paid back by shorter retention --
+  # samples = series x (retention / interval), so 7.5x faster at 1/7.5 the
+  # window is the same bytes on disk.
+  scrape_interval: 1s
+  scrape_timeout: 900ms
+  evaluation_interval: 15s
+
+rule_files:
+  - alerts.yml
+
+scrape_configs:
+  - job_name: model
+    static_configs: [{ targets: ["model:8080"] }]
+  - job_name: backend
+    static_configs: [{ targets: ["backend:8000"] }]
+  - job_name: gpu
+    static_configs: [{ targets: ["dcgm-exporter:9400"] }]

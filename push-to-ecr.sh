@@ -23,7 +23,7 @@ TAG="$(git rev-parse --short HEAD)"
 PREFIX="socrates"
 
 TIERS=("$@")
-[ ${#TIERS[@]} -eq 0 ] && TIERS=(model backend)
+[ ${#TIERS[@]} -eq 0 ] && TIERS=(model backend prometheus grafana)
 
 cd "$(dirname "$0")"     # repo root; build contexts are relative to it
 
@@ -47,7 +47,7 @@ for tier in "${TIERS[@]}"; do
   echo "==> building ${repo}:${TAG}"
   docker build \
     --platform linux/amd64 \
-    -f "${tier}/Dockerfile" \
+    -f "$([ -f "${tier}/Dockerfile" ] && echo "${tier}/Dockerfile" || echo "monitoring/Dockerfile.${tier}")" \
     -t "${uri}:${TAG}" \
     -t "${uri}:latest" \
     .

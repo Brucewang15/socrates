@@ -1,0 +1,15 @@
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    # Pinned: the dashboard JSON references this uid. Without it Grafana
+    # generates a random one and every panel silently resolves to nothing.
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      # Grafana clamps a query's step to this and defaults it to 15s, so 1s
+      # data gets served back at 15s resolution unless it is told otherwise.
+      # It must match prometheus.yml's scrape_interval.
+      timeInterval: 1s

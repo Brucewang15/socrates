@@ -1,0 +1,24 @@
+# Overlay for local dev, applied explicitly so it never reaches the instance:
+#   docker compose -f docker-compose.yaml -f docker-compose.dev.yml up -d prometheus grafana
+services:
+  prometheus:
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=1d
+      - --storage.tsdb.retention.size=128MB
+    volumes:
+      # a mount beats the baked config, so dev gets host.docker.internal targets
+      - ./monitoring/prometheus.dev.yml:/etc/prometheus/prometheus.yml:ro
+      - prom:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # Docker Desktop provides this; Linux does not
+
+  grafana:
+    build:
+      context: .
+      dockerfile: monitoring/Dockerfile.grafana
+    environment:
+      # Next rewrites /monitoring -> here, so Grafana has to generate its asset
+      # and redirect URLs under that prefix rather than at /.
+      GF_SERVER_ROOT_URL: http://localhost:3000/monitoring/
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"

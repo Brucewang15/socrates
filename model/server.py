@@ -19,13 +19,43 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-import model.inference_cont as cont
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    Counter,
+    Gauge,
+    Histogram,
+    generate_latest,
+)
 from pydantic import BaseModel
+
+import model.inference_cont as cont
 
 IDLE_S = 0.005
 TIMEOUT_S = 300
 MAX_QUEUE = 16 * cont.MAX_BATCH
+
+# Histograms, not summaries: quantiles have to be computable across replicas,
+# and a mean TTFT hides the bimodal shape queueing creates. Buckets are sized
+# from measured runs. The top bucket has to exceed the worst real TTFT:
+# 48 prompts through MAX_BATCH rows is 3 waves, and a long answer is several
+# hundred tokens, so the last arrivals can wait minutes. Anything above the
+# highest finite bucket lands in +Inf, where histogram_quantile cannot
+# interpolate and the percentile silently pins to the top bucket.
+TTFT = Histogram("socrates_ttft_seconds", "queue wait plus prefill",
+                 buckets=(.05, .1, .25, .5, 1, 2, 5, 10, 20, 60, 120, 300))
+QUEUE = Histogram("socrates_queue_seconds", "waiting for a row",
+                  buckets=(.005, .05, .25, 1, 2, 5, 10, 30, 60, 120, 300))
+PREFILL = Histogram("socrates_prefill_seconds", "prompt forward pass",
+                    buckets=(.01, .05, .1, .25, .5, 1, 2, 5))
+ITL = Histogram("socrates_itl_seconds", "seconds per generated token",
+                buckets=(.005, .01, .025, .05, .1, .25, .5, 1))
+LATENCY = Histogram("socrates_request_seconds", "submit to last token",
+                    buckets=(.5, 1, 2, 5, 10, 30, 60, 120, 300, 600))
+
+REQUESTS = Counter("socrates_requests_total", "generate calls", ["outcome"])
+OUT_TOKENS = Counter("socrates_output_tokens_total", "tokens generated")
+IN_TOKENS = Counter("socrates_prompt_tokens_total", "tokens prefilled")
 
 app = FastAPI(title="socrates-model")
 
@@ -60,30 +90,40 @@ class GenerateRequest(BaseModel):
 def generate(req: GenerateRequest) -> dict:
     # shed load at the door rather than letting the deque grow without bound
     if len(engine.pending) >= MAX_QUEUE:
+        REQUESTS.labels("queue_full").inc()
         raise HTTPException(status_code=429, detail="queue full")
     try:
         r = engine.submit(req.prompt)
     except ValueError as e:
+        REQUESTS.labels("too_long").inc()
         raise HTTPException(status_code=413, detail=str(e)) from e
 
     # the engine sets this in retire(); nothing here holds a reference to r
     # afterwards, so a timed-out request is freed once the engine drops its row
     if not r.event.wait(timeout=TIMEOUT_S):
+        REQUESTS.labels("timeout").inc()
         raise HTTPException(status_code=504, detail="generation timed out")
     n = len(r.output)
+    queue_s, prefill_s = r.admitted - r.submitted, r.first_token - r.admitted
+    decode_s, itl_s = r.finished - r.first_token, (r.finished - r.first_token) / max(n, 1)
+    QUEUE.observe(queue_s)
+    PREFILL.observe(prefill_s)
+    TTFT.observe(queue_s + prefill_s)
+    ITL.observe(itl_s)
+    LATENCY.observe(r.finished - r.submitted)
+    REQUESTS.labels("ok").inc()
+    OUT_TOKENS.inc(n)
+    IN_TOKENS.inc(int(r.ids.shape[1]))
     return {
         "response": engine.tok.decode(r.output),
         "prompt_tokens": int(r.ids.shape[1]),
         "output_tokens": n,
         "timing": {
-            "queue_s": r.admitted - r.submitted,
-            "prefill_s": r.first_token - r.admitted,
-            "decode_s": r.finished - r.first_token,
+            "queue_s": queue_s,
+            "prefill_s": prefill_s,
+            "decode_s": decode_s,
             "total_s": r.finished - r.submitted,
-            # n tokens have n-1 gaps between them, and first_token is already
-            # the first one, so decode_s spans n-1 intervals. Dividing by n
-            # understates the real inter-token latency by 1/n.
-            "itl_s": (r.finished - r.first_token) / max(n - 1, 1),
+            "itl_s": itl_s,
         },
     }
 
@@ -93,10 +133,23 @@ def health() -> dict:
     return {"status": "ok", "device": cont.DEVICE, "max_batch": cont.MAX_BATCH}
 
 
+# Sampled at scrape time rather than pushed, so they are always current.
+# Queue depth is the number to autoscale on -- GPU utilisation sits near 100%
+# during decode whether one row is busy or all of them.
+Gauge("socrates_queue_depth", "requests waiting for a row").set_function(
+    lambda: len(engine.pending))
+Gauge("socrates_active_rows", "rows currently generating").set_function(
+    lambda: engine.n_active)
+Gauge("socrates_max_batch", "row capacity").set_function(lambda: cont.MAX_BATCH)
+
+
 @app.get("/metrics")
-def metrics() -> dict:
-    """Queue depth is the number to autoscale on -- GPU utilisation sits near
-    100% during decode whether one row is busy or all of them."""
+def metrics() -> Response:
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+@app.get("/metrics.json")
+def metrics_json() -> dict:
     return {
         "pending": len(engine.pending),
         "active": engine.n_active,

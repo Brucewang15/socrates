@@ -59,11 +59,11 @@ export const FORMULAS: Record<string, FormulaProps> = {
     caveat:
       "Median, not mean: a request that emits one token has no gap to measure and would otherwise report its whole decode span as a single interval, which a mean cannot survive. With N rows sharing a decode step, aggregate throughput is roughly N x this.",
   },
-  ttft_p99_s: {
+  ttft_p95_s: {
     what: "Time to first token, worst case. Queue wait plus prefill.",
-    formula: "p99( queue_s + prefill_s )",
+    formula: "p95( queue_s + prefill_s )",
     caveat:
-      "queue_s is time spent in the engine's pending deque before a row frees. Percentiles are linearly interpolated over 15 samples, so p99 is close to the max.",
+      "queue_s is time spent in the engine's pending deque before a row frees. Percentiles are linearly interpolated over 48 samples, which is enough for p90/p95 to be stable but not p99.",
   },
   itl_p50_s: {
     what: "Median seconds between consecutive tokens, once generating.",
@@ -106,7 +106,7 @@ export const FORMULAS: Record<string, FormulaProps> = {
     formula: "finished - submitted",
   },
   bucket: {
-    what: "Expected output length, five prompts each.",
+    what: "Expected output length, sixteen prompts each.",
     formula: "short | medium | long",
     caveat:
       "An expectation, not a guarantee — the model decides when to stop. The spread is deliberate: mixed lengths are what separate continuous batching from static.",

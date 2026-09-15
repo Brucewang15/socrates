@@ -77,7 +77,7 @@ locals {
 # ------- ECR --------
 
 resource "aws_ecr_repository" "tier" {
-  for_each = toset(["model", "backend"])
+  for_each = toset(["model", "backend", "prometheus", "grafana"])
 
   name = "socrates/${each.key}"
 
