@@ -7,6 +7,9 @@ export type Req = {
   prompt_tokens: number;
   output_tokens: number;
   sent: number;
+  started: number;
+  first_token: number;
+  finished: number;
   queue_s: number;
   prefill_s: number;
   decode_s: number;

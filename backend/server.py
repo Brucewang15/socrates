@@ -32,21 +32,13 @@ MODEL_URL = os.getenv("MODEL_URL", "http://localhost:8080")
 ORIGINS = ["http://localhost:3000", "https://socratesllm.vercel.app"]
 TIMEOUT_S = 300
 BENCH_TIMEOUT_S = 1800
-BENCH_RATE = 16.0     # requests/sec
+BENCH_RATE = 4.0      # requests/sec
 BENCH_SEED = 0
 
-# Five prompts each of short, medium and long expected output, so the batch has
-# real variance in how long rows live. That variance is the whole point: it is
-# what separates continuous batching from static, where one long job holds a
-# wave open while short ones sit finished. An all-short set (the previous
-# version was 11 of 16) drains too fast to fill rows, which understates
-# occupancy and throughput both.
-#
-# The bucket is an *expectation*, not a guarantee -- the model decides when to
-# stop. It is reported per request so the table can be read by class.
-
-# One pooled client for the process
-client = httpx.AsyncClient(base_url=MODEL_URL, timeout=TIMEOUT_S)
+client = httpx.AsyncClient(
+    base_url=MODEL_URL, timeout=TIMEOUT_S,
+    limits=httpx.Limits(max_connections=256, max_keepalive_connections=64),
+)
 
 
 @asynccontextmanager
@@ -168,8 +160,13 @@ async def benchmark(req: BenchRequest | None = None) -> dict:
             raise HTTPException(status_code=r.status_code, detail=r.text)
         b = r.json()
         t = b["timing"]
+        received = time.perf_counter() - t0
+        started = received - t["total_s"]
         return {
             "i": i,
+            "started": started,
+            "first_token": started + t["queue_s"] + t["prefill_s"],
+            "finished": received,
             "bucket": bucket,
             "prompt": prompt,
             "prompt_tokens": b["prompt_tokens"],
@@ -207,11 +204,10 @@ async def benchmark(req: BenchRequest | None = None) -> dict:
     grid, occupancy = 120, []
     for j in range(grid):
         t = wall * j / (grid - 1)
-        queued = sum(1 for r in rows if r["sent"] <= t < r["sent"] + r["queue_s"])
+        queued = sum(1 for r in rows if r["sent"] <= t < r["started"] + r["queue_s"])
         held = sum(1 for r in rows
-                   if r["sent"] + r["queue_s"] <= t < r["sent"] + r["total_s"])
-        gen = sum(1 for r in rows
-                  if r["sent"] + r["ttft_s"] <= t < r["sent"] + r["total_s"])
+                   if r["started"] + r["queue_s"] <= t < r["finished"])
+        gen = sum(1 for r in rows if r["first_token"] <= t < r["finished"])
         occupancy.append({"t": round(t, 3), "generating": gen, "held": held,
                           "queued": queued})
 

@@ -43,7 +43,7 @@ export default function Benchmark() {
         <div>
           <h1>Benchmark</h1>
           <p className="muted">
-            {ctx?.prompts ?? 128} prompts arriving at {ctx?.rate ?? 16}/s, through{" "}
+            {ctx?.prompts ?? 128} prompts arriving at {ctx?.rate ?? 4}/s, through{" "}
             {ctx?.max_batch ?? "N"} rows — short, medium and long mixed
             expected output.
           </p>

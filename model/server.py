@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import model.inference_cont as cont
 from fastapi import FastAPI, HTTPException, Response
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
@@ -28,8 +29,6 @@ from prometheus_client import (
     generate_latest,
 )
 from pydantic import BaseModel
-
-import model.inference_cont as cont
 
 IDLE_S = 0.005
 TIMEOUT_S = 300
