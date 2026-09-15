@@ -32,6 +32,23 @@ services:
               count: all
               capabilities: [gpu]
 
+  # TLS for socrates.pianofi.ca and monitoring.socrates.pianofi.ca. Certificates
+  # live in the caddy volume; losing it means re-issuing against Let's Encrypt
+  # rate limits.
+  caddy:
+    image: ${REGISTRY:-socrates}/caddy:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: caddy/Dockerfile
+    restart: unless-stopped
+    depends_on: [backend, grafana]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+
   backend:
     image: ${REGISTRY:-socrates}/backend:${IMAGE_TAG:-latest}
     build:
@@ -93,6 +110,8 @@ services:
               capabilities: [gpu, utility]
 
 volumes:
+  caddy_data:
+  caddy_config:
   weights:
   prom:
   grafana:

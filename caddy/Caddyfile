@@ -1,0 +1,7 @@
+socrates.pianofi.ca {
+	reverse_proxy backend:8000
+}
+
+monitoring.socrates.pianofi.ca {
+	reverse_proxy grafana:3000
+}

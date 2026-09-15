@@ -77,7 +77,7 @@ locals {
 # ------- ECR --------
 
 resource "aws_ecr_repository" "tier" {
-  for_each = toset(["model", "backend", "prometheus", "grafana"])
+  for_each = toset(["model", "backend", "prometheus", "grafana", "caddy"])
 
   name = "socrates/${each.key}"
 
@@ -239,6 +239,18 @@ resource "aws_security_group_rule" "api" {
 }
 
 # -------- EC2 ---------
+
+resource "aws_security_group_rule" "tls" {
+  for_each = toset(["80", "443"])
+
+  type              = "ingress"
+  description       = "caddy"
+  security_group_id = aws_security_group.gpu.id
+  from_port         = tonumber(each.key)
+  to_port           = tonumber(each.key)
+  protocol          = "tcp"
+  cidr_blocks       = ["0.0.0.0/0"] # ACME HTTP-01 and browsers; cannot be scoped
+}
 
 resource "aws_instance" "gpu" {
   ami                    = var.ami_id != null ? var.ami_id : data.aws_ami.gpu.id

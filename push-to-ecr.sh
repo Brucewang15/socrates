@@ -23,7 +23,7 @@ TAG="$(git rev-parse --short HEAD)"
 PREFIX="socrates"
 
 TIERS=("$@")
-[ ${#TIERS[@]} -eq 0 ] && TIERS=(model backend prometheus grafana)
+[ ${#TIERS[@]} -eq 0 ] && TIERS=(model backend prometheus grafana caddy)
 
 cd "$(dirname "$0")"     # repo root; build contexts are relative to it
 
