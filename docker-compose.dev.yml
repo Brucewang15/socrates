@@ -8,3 +8,10 @@ services:
       - prom:/prometheus
     extra_hosts:
       - "host.docker.internal:host-gateway"   # Docker Desktop provides this; Linux does not
+
+  grafana:
+    environment:
+      # Next rewrites /monitoring -> here, so Grafana has to generate its asset
+      # and redirect URLs under that prefix rather than at /.
+      GF_SERVER_ROOT_URL: http://localhost:3000/monitoring/
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"

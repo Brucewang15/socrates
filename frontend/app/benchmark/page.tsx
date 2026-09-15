@@ -3,19 +3,17 @@
 import Link from "next/link";
 import { useState } from "react";
 import { Distribution, Occupancy, Timeline } from "./charts";
+import { FORMULAS, Formula } from "./formula";
 import type { Result } from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 const TILES = [
-  { key: "throughput_tps", label: "throughput", unit: " tok/s", dp: 1,
-    note: "total output tokens over wall time" },
-  { key: "ttft_p99_s", label: "TTFT p99", unit: "s", dp: 2,
-    note: "queue wait plus prefill, worst case" },
-  { key: "itl_p50_s", label: "ITL p50", unit: "s", dp: 3,
-    note: "seconds between tokens once generating" },
-  { key: "occupancy", label: "occupancy", unit: "", dp: 2,
-    note: "mean rows generating over MAX_BATCH" },
+  { key: "throughput_tps", label: "throughput", unit: " tok/s", dp: 1 },
+  { key: "per_stream_tps", label: "per stream", unit: " tok/s", dp: 1 },
+  { key: "ttft_p99_s", label: "TTFT p99", unit: "s", dp: 2 },
+  { key: "itl_p50_s", label: "ITL p50", unit: "s", dp: 3 },
+  { key: "occupancy", label: "occupancy", unit: "", dp: 2 },
 ] as const;
 
 export default function Benchmark() {
@@ -45,7 +43,9 @@ export default function Benchmark() {
         <div>
           <h1>Benchmark</h1>
           <p className="muted">
-            16 prompts submitted at once, through {ctx?.max_batch ?? "N"} rows.
+            {ctx?.prompts ?? 15} prompts submitted at once, through{" "}
+            {ctx?.max_batch ?? "N"} rows — five each of short, medium and long
+            expected output.
           </p>
         </div>
         <div className="bench-actions">
@@ -68,12 +68,15 @@ export default function Benchmark() {
           <section className="tiles">
             {TILES.map((t) => (
               <div key={t.key} className="tile">
-                <span className="tile-label">{t.label}</span>
+                <span className="tile-label">
+                  {t.label}
+                  <Formula {...FORMULAS[t.key]} />
+                </span>
                 <span className="tile-value">
                   {data.headline[t.key].toFixed(t.dp)}
                   <small>{t.unit}</small>
                 </span>
-                <span className="tile-note">{t.note}</span>
+                <span className="tile-note">{FORMULAS[t.key].formula}</span>
               </div>
             ))}
           </section>
@@ -122,7 +125,10 @@ export default function Benchmark() {
               <tbody>
                 {Object.entries(data.percentiles).map(([k, v]) => (
                   <tr key={k}>
-                    <td>{k.replace("_s", "")}</td>
+                    <td>
+                      {k.replace("_s", "")}
+                      {FORMULAS[k] && <Formula {...FORMULAS[k]} />}
+                    </td>
                     <td>{v.p50.toFixed(3)}s</td>
                     <td>{v.p95.toFixed(3)}s</td>
                     <td>{v.p99.toFixed(3)}s</td>
@@ -137,14 +143,20 @@ export default function Benchmark() {
             <table>
               <thead>
                 <tr>
-                  <th>prompt</th><th>in</th><th>out</th><th>queue</th>
-                  <th>TTFT</th><th>ITL</th><th>total</th>
+                  <th>prompt</th>
+                  <th>len<Formula {...FORMULAS.bucket} /></th>
+                  <th>in</th><th>out</th>
+                  <th>queue<Formula {...FORMULAS.queue_s} /></th>
+                  <th>TTFT<Formula {...FORMULAS.ttft_s} /></th>
+                  <th>ITL<Formula {...FORMULAS.itl_s} /></th>
+                  <th>total<Formula {...FORMULAS.total_s} /></th>
                 </tr>
               </thead>
               <tbody>
                 {data.requests.map((r) => (
                   <tr key={r.i}>
                     <td className="prompt">{r.prompt}</td>
+                    <td><span className={`bucket bucket-${r.bucket}`}>{r.bucket}</span></td>
                     <td>{r.prompt_tokens}</td>
                     <td>{r.output_tokens}</td>
                     <td>{r.queue_s.toFixed(2)}s</td>

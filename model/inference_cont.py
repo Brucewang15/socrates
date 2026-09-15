@@ -100,6 +100,42 @@ class Engine:
         self.rows: list[Request | None] = [None] * MAX_BATCH
         self.n_active = 0
         self.pending: deque[Request] = deque()
+        self.warmup()
+
+    @torch.no_grad()
+    def warmup(self) -> None:
+        """Compile the decode graph for every batch width before serving.
+
+        dynamic=False means one trace per distinct row count: the graph built
+        for 4 rows is not reused at 3. Letting real traffic discover those
+        widths costs ~45s the first time the batch drains 4->3, and again
+        3->2 -- paid mid-request, charged to whichever rows are resident. A
+        measured run showed exactly that: throughput fell from 126 tok/s to
+        near zero for 48s at each transition, and the stall landed inside the
+        reported inter-token latency of three unrelated requests.
+
+        Doing it here rather than by sending warmup requests through the
+        scheduler, because that cannot reach a given width on purpose --
+        concurrent requests arrive milliseconds apart, and identical prompts
+        produce identical output and retire on the same step, so a wave of 4
+        drains 4->1 and never touches 3 or 2.
+        """
+        if self.decode_model is self.model:
+            return                       # eager decode: nothing to trace
+        t0 = time.perf_counter()
+        ids = torch.zeros((MAX_BATCH, 1), dtype=torch.long, device=DEVICE)
+        for width in range(1, MAX_BATCH + 1):
+            # more than one step per width: reduce-overhead defers CUDA graph
+            # capture past the first call, so a single step can leave the
+            # capture itself for the real run to pay.
+            for step in range(3):
+                positions = torch.full((width, 1), step, dtype=torch.long, device=DEVICE)
+                self.decode_model(ids[:width], self.cache, slice(0, width), positions)
+        # warmup wrote real tokens into rows 0..MAX_BATCH-1; hand them back empty
+        for row in range(MAX_BATCH):
+            self.cache.reset(row)
+        print(f"decode graphs warm for 1..{MAX_BATCH} rows "
+              f"in {time.perf_counter() - t0:.1f}s", flush=True)
 
     def submit(self, prompt: str) -> Request:
         req = Request(prompt)
