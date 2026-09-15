@@ -32,7 +32,7 @@ MODEL_URL = os.getenv("MODEL_URL", "http://localhost:8080")
 ORIGINS = ["http://localhost:3000", "https://socratesllm.vercel.app"]
 TIMEOUT_S = 300
 BENCH_TIMEOUT_S = 1800
-BENCH_RATE = 4.0      # requests/sec
+BENCH_RATE = 3.0      # requests/sec
 BENCH_SEED = 0
 
 client = httpx.AsyncClient(
