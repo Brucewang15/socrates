@@ -37,17 +37,21 @@ MAX_QUEUE = 16 * cont.MAX_BATCH
 
 # Histograms, not summaries: quantiles have to be computable across replicas,
 # and a mean TTFT hides the bimodal shape queueing creates. Buckets are sized
-# from measured runs -- TTFT lands between 0.2s and 15s at MAX_BATCH 4.
+# from measured runs. The top bucket has to exceed the worst real TTFT:
+# 48 prompts through MAX_BATCH rows is 3 waves, and a long answer is several
+# hundred tokens, so the last arrivals can wait minutes. Anything above the
+# highest finite bucket lands in +Inf, where histogram_quantile cannot
+# interpolate and the percentile silently pins to the top bucket.
 TTFT = Histogram("socrates_ttft_seconds", "queue wait plus prefill",
-                 buckets=(.05, .1, .25, .5, 1, 2, 5, 10, 20, 60))
+                 buckets=(.05, .1, .25, .5, 1, 2, 5, 10, 20, 60, 120, 300))
 QUEUE = Histogram("socrates_queue_seconds", "waiting for a row",
-                  buckets=(.005, .05, .25, 1, 2, 5, 10, 30))
+                  buckets=(.005, .05, .25, 1, 2, 5, 10, 30, 60, 120, 300))
 PREFILL = Histogram("socrates_prefill_seconds", "prompt forward pass",
                     buckets=(.01, .05, .1, .25, .5, 1, 2, 5))
 ITL = Histogram("socrates_itl_seconds", "seconds per generated token",
                 buckets=(.005, .01, .025, .05, .1, .25, .5, 1))
 LATENCY = Histogram("socrates_request_seconds", "submit to last token",
-                    buckets=(.5, 1, 2, 5, 10, 30, 60, 120, 300))
+                    buckets=(.5, 1, 2, 5, 10, 30, 60, 120, 300, 600))
 
 REQUESTS = Counter("socrates_requests_total", "generate calls", ["outcome"])
 OUT_TOKENS = Counter("socrates_output_tokens_total", "tokens generated")

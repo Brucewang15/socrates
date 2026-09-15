@@ -26,9 +26,9 @@ from pydantic import BaseModel
 load_dotenv()
 
 MODEL_URL = os.getenv("MODEL_URL", "http://localhost:8080")
-ORIGINS = ["http://localhost:3000"]
+ORIGINS = ["http://localhost:3000", "https://socratesllm.vercel.app"]
 TIMEOUT_S = 300
-BENCH_TIMEOUT_S = 1800     # 16 prompts through MAX_BATCH rows takes minutes
+BENCH_TIMEOUT_S = 1800
 
 # Five prompts each of short, medium and long expected output, so the batch has
 # real variance in how long rows live. That variance is the whole point: it is
@@ -40,24 +40,56 @@ BENCH_TIMEOUT_S = 1800     # 16 prompts through MAX_BATCH rows takes minutes
 # The bucket is an *expectation*, not a guarantee -- the model decides when to
 # stop. It is reported per request so the table can be read by class.
 BENCH_PROMPTS: list[tuple[str, str]] = [
-    # short: a handful of tokens
-    ("short", "what is 2+2?"),
-    ("short", "capital of France?"),
-    ("short", "name a color"),
-    ("short", "what is 10-7?"),
-    ("short", "say hi"),
+    ("short", 'what is 2+2?'),
+    ("short", 'capital of France?'),
+    ("short", 'name a color'),
+    ("short", 'what is 10-7?'),
+    ("short", 'say hi'),
+    ("short", 'name a fruit'),
+    ("short", 'what is 5*5?'),
+    ("short", 'name an animal'),
+    ("short", 'name a country'),
+    ("short", 'what is 12/4?'),
+    ("short", 'name a metal'),
+    ("short", 'what colour is the sky?'),
+    ("short", 'name a planet'),
+    ("short", 'what is 9+6?'),
+    ("short", 'name a programming language'),
+    ("short", 'what is 100/25?'),
     # medium: a sentence or a short list
-    ("medium", "in two sentences, what is a KV cache?"),
-    ("medium", "name three fruits with one fact about each"),
-    ("medium", "write a haiku about GPUs"),
-    ("medium", "why does water boil at a lower temperature at altitude?"),
-    ("medium", "give me three names for a pet cat"),
+    ("medium", 'in two sentences, what is a KV cache?'),
+    ("medium", 'name three fruits with one fact about each'),
+    ("medium", 'write a haiku about GPUs'),
+    ("medium", 'why does water boil at a lower temperature at altitude?'),
+    ("medium", 'give me three names for a pet cat'),
+    ("medium", 'define latency in one sentence'),
+    ("medium", 'what does a GPU do, briefly?'),
+    ("medium", 'list four prime numbers and why they qualify'),
+    ("medium", 'what is a tensor, in two sentences?'),
+    ("medium", 'name three sorting algorithms with their big-O'),
+    ("medium", 'what is a race condition? give one example'),
+    ("medium", 'what does bf16 mean and why use it?'),
+    ("medium", 'name three HTTP status codes and when they apply'),
+    ("medium", 'what is a context window?'),
+    ("medium", 'in two sentences, what is a cache miss?'),
+    ("medium", 'give two uses for a hash table'),
     # long: multi-paragraph, several hundred tokens
-    ("long", "how to make pizza?"),
-    ("long", "explain recursion with a worked example"),
-    ("long", "explain how a transformer language model generates text"),
-    ("long", "describe the rules of chess to a beginner"),
-    ("long", "write a short guide to renting your first apartment"),
+    ("long", 'how to make pizza?'),
+    ("long", 'explain recursion with a worked example'),
+    ("long", 'explain how a transformer language model generates text'),
+    ("long", 'describe the rules of chess to a beginner'),
+    ("long", 'write a short guide to renting your first apartment'),
+    ("long", 'explain how attention works in a transformer'),
+    ("long", 'explain continuous batching versus static batching'),
+    ("long", 'explain why decoding is memory bandwidth bound'),
+    ("long", 'walk through what happens when you type a URL into a browser'),
+    ("long", 'explain paged attention and the problem it solves'),
+    ("long", 'describe the tradeoffs of quantising a model to int8'),
+    ("long", 'explain how gradient descent trains a neural network'),
+    ("long", 'write a detailed description of a thunderstorm at sea'),
+    ("long", 'describe how a database index speeds up a query'),
+    ("long", 'explain the roofline model and how to read one'),
+    ("long", 'write a short story about a lighthouse keeper'),
 ]
 
 # One pooled client for the process
@@ -139,7 +171,7 @@ def _pct(xs: list[float], p: float) -> float:
 
 
 def _spread(xs: list[float]) -> dict[str, float]:
-    return {f"p{p}": _pct(xs, p) for p in (50, 95, 99)}
+    return {f"p{p}": _pct(xs, p) for p in (50, 90, 95)}
 
 
 @app.post("/api/benchmark")
@@ -238,7 +270,7 @@ async def benchmark() -> dict:
             # Per stream, so aggregate cannot be mistaken for what one caller
             # sees. With N rows sharing a decode step, aggregate is roughly N x.
             "per_stream_tps": 1 / itl_p50 if itl_p50 else 0.0,
-            "ttft_p99_s": _pct([r["ttft_s"] for r in rows], 99),
+            "ttft_p95_s": _pct([r["ttft_s"] for r in rows], 95),
             "itl_p50_s": itl_p50,
             "occupancy": mean_live / max_batch,
         },

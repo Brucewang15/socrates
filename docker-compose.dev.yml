@@ -7,13 +7,16 @@ services:
       - --storage.tsdb.retention.time=1d
       - --storage.tsdb.retention.size=128MB
     volumes:
+      # a mount beats the baked config, so dev gets host.docker.internal targets
       - ./monitoring/prometheus.dev.yml:/etc/prometheus/prometheus.yml:ro
-      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prom:/prometheus
     extra_hosts:
       - "host.docker.internal:host-gateway"   # Docker Desktop provides this; Linux does not
 
   grafana:
+    build:
+      context: .
+      dockerfile: monitoring/Dockerfile.grafana
     environment:
       # Next rewrites /monitoring -> here, so Grafana has to generate its asset
       # and redirect URLs under that prefix rather than at /.

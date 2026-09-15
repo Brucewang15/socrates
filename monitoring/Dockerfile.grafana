@@ -1,0 +1,8 @@
+# Built from the repo root: docker build -f monitoring/Dockerfile.grafana .
+#
+# Dashboards go to /etc/grafana, NOT /var/lib/grafana: compose mounts a named
+# volume at the latter, which would shadow anything baked there after the first
+# boot and quietly serve a stale dashboard forever.
+FROM grafana/grafana:11.5.1
+COPY monitoring/grafana/provisioning /etc/grafana/provisioning
+COPY monitoring/grafana/dashboards /etc/grafana/dashboards

@@ -11,7 +11,7 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const TILES = [
   { key: "throughput_tps", label: "throughput", unit: " tok/s", dp: 1 },
   { key: "per_stream_tps", label: "per stream", unit: " tok/s", dp: 1 },
-  { key: "ttft_p99_s", label: "TTFT p99", unit: "s", dp: 2 },
+  { key: "ttft_p95_s", label: "TTFT p95", unit: "s", dp: 2 },
   { key: "itl_p50_s", label: "ITL p50", unit: "s", dp: 3 },
   { key: "occupancy", label: "occupancy", unit: "", dp: 2 },
 ] as const;
@@ -43,7 +43,7 @@ export default function Benchmark() {
         <div>
           <h1>Benchmark</h1>
           <p className="muted">
-            {ctx?.prompts ?? 15} prompts submitted at once, through{" "}
+            {ctx?.prompts ?? 48} prompts submitted at once, through{" "}
             {ctx?.max_batch ?? "N"} rows — five each of short, medium and long
             expected output.
           </p>
@@ -120,7 +120,7 @@ export default function Benchmark() {
             <h2>Percentiles</h2>
             <table>
               <thead>
-                <tr><th>metric</th><th>p50</th><th>p95</th><th>p99</th></tr>
+                <tr><th>metric</th><th>p50</th><th>p90</th><th>p95</th></tr>
               </thead>
               <tbody>
                 {Object.entries(data.percentiles).map(([k, v]) => (
@@ -130,8 +130,8 @@ export default function Benchmark() {
                       {FORMULAS[k] && <Formula {...FORMULAS[k]} />}
                     </td>
                     <td>{v.p50.toFixed(3)}s</td>
+                    <td>{v.p90.toFixed(3)}s</td>
                     <td>{v.p95.toFixed(3)}s</td>
-                    <td>{v.p99.toFixed(3)}s</td>
                   </tr>
                 ))}
               </tbody>
