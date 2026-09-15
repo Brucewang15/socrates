@@ -16,7 +16,7 @@ import torch
 from model.qwen.qwen_kv_cont import MODEL_ID, KVCache, Qwen3, load_config, load_weights
 from transformers import AutoTokenizer
 
-MAX_BATCH = 16
+MAX_BATCH = 32
 MAX_NEW_TOKENS = 1024
 MAX_LEN = 2048
 DEVICE = os.getenv("DEVICE", "mps")

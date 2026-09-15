@@ -43,8 +43,8 @@ export default function Benchmark() {
         <div>
           <h1>Benchmark</h1>
           <p className="muted">
-            {ctx?.prompts ?? 48} prompts submitted at once, through{" "}
-            {ctx?.max_batch ?? "N"} rows — five each of short, medium and long
+            {ctx?.prompts ?? 128} prompts arriving at {ctx?.rate ?? 16}/s, through{" "}
+            {ctx?.max_batch ?? "N"} rows — short, medium and long mixed
             expected output.
           </p>
         </div>
@@ -83,6 +83,7 @@ export default function Benchmark() {
 
           <p className="muted">
             {data.context.device} · MAX_BATCH {data.context.max_batch} ·{" "}
+            {data.context.rate}/s seed {data.context.seed} ·{" "}
             {data.context.prompts} prompts · {data.context.output_tokens} tokens ·{" "}
             {data.context.wall_s.toFixed(1)}s wall
           </p>

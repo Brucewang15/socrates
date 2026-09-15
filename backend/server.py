@@ -13,6 +13,7 @@ No streaming yet: this holds the request open and returns the whole string.
 import asyncio
 import math
 import os
+import random
 import time
 from contextlib import asynccontextmanager
 
@@ -23,12 +24,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from pydantic import BaseModel
 
+from backend.prompts import PROMPTS
+
 load_dotenv()
 
 MODEL_URL = os.getenv("MODEL_URL", "http://localhost:8080")
 ORIGINS = ["http://localhost:3000", "https://socratesllm.vercel.app"]
 TIMEOUT_S = 300
 BENCH_TIMEOUT_S = 1800
+BENCH_RATE = 16.0     # requests/sec
+BENCH_SEED = 0
 
 # Five prompts each of short, medium and long expected output, so the batch has
 # real variance in how long rows live. That variance is the whole point: it is
@@ -39,58 +44,6 @@ BENCH_TIMEOUT_S = 1800
 #
 # The bucket is an *expectation*, not a guarantee -- the model decides when to
 # stop. It is reported per request so the table can be read by class.
-BENCH_PROMPTS: list[tuple[str, str]] = [
-    ("short", 'what is 2+2?'),
-    ("short", 'capital of France?'),
-    ("short", 'name a color'),
-    ("short", 'what is 10-7?'),
-    ("short", 'say hi'),
-    ("short", 'name a fruit'),
-    ("short", 'what is 5*5?'),
-    ("short", 'name an animal'),
-    ("short", 'name a country'),
-    ("short", 'what is 12/4?'),
-    ("short", 'name a metal'),
-    ("short", 'what colour is the sky?'),
-    ("short", 'name a planet'),
-    ("short", 'what is 9+6?'),
-    ("short", 'name a programming language'),
-    ("short", 'what is 100/25?'),
-    # medium: a sentence or a short list
-    ("medium", 'in two sentences, what is a KV cache?'),
-    ("medium", 'name three fruits with one fact about each'),
-    ("medium", 'write a haiku about GPUs'),
-    ("medium", 'why does water boil at a lower temperature at altitude?'),
-    ("medium", 'give me three names for a pet cat'),
-    ("medium", 'define latency in one sentence'),
-    ("medium", 'what does a GPU do, briefly?'),
-    ("medium", 'list four prime numbers and why they qualify'),
-    ("medium", 'what is a tensor, in two sentences?'),
-    ("medium", 'name three sorting algorithms with their big-O'),
-    ("medium", 'what is a race condition? give one example'),
-    ("medium", 'what does bf16 mean and why use it?'),
-    ("medium", 'name three HTTP status codes and when they apply'),
-    ("medium", 'what is a context window?'),
-    ("medium", 'in two sentences, what is a cache miss?'),
-    ("medium", 'give two uses for a hash table'),
-    # long: multi-paragraph, several hundred tokens
-    ("long", 'how to make pizza?'),
-    ("long", 'explain recursion with a worked example'),
-    ("long", 'explain how a transformer language model generates text'),
-    ("long", 'describe the rules of chess to a beginner'),
-    ("long", 'write a short guide to renting your first apartment'),
-    ("long", 'explain how attention works in a transformer'),
-    ("long", 'explain continuous batching versus static batching'),
-    ("long", 'explain why decoding is memory bandwidth bound'),
-    ("long", 'walk through what happens when you type a URL into a browser'),
-    ("long", 'explain paged attention and the problem it solves'),
-    ("long", 'describe the tradeoffs of quantising a model to int8'),
-    ("long", 'explain how gradient descent trains a neural network'),
-    ("long", 'write a detailed description of a thunderstorm at sea'),
-    ("long", 'describe how a database index speeds up a query'),
-    ("long", 'explain the roofline model and how to read one'),
-    ("long", 'write a short story about a lighthouse keeper'),
-]
 
 # One pooled client for the process
 client = httpx.AsyncClient(base_url=MODEL_URL, timeout=TIMEOUT_S)
@@ -174,13 +127,20 @@ def _spread(xs: list[float]) -> dict[str, float]:
     return {f"p{p}": _pct(xs, p) for p in (50, 90, 95)}
 
 
-@app.post("/api/benchmark")
-async def benchmark() -> dict:
-    """Fire every prompt at once and report what the scheduler did with them.
+class BenchRequest(BaseModel):
+    rate: float = BENCH_RATE
+    seed: int = BENCH_SEED
 
-    Concurrency is the point: sequential requests would never fill a batch, so
-    queue_s would be zero and occupancy would be 1/MAX_BATCH throughout.
+
+@app.post("/api/benchmark")
+async def benchmark(req: BenchRequest | None = None) -> dict:
+    """Open-loop: arrivals are Poisson at `rate`, not one burst.
+
+    Seeded, so the same rate and seed replay the same arrival sequence. Firing
+    everything at t=0 measures how a full batch drains; a rate measures what the
+    scheduler sustains, which is the number that generalises.
     """
+    req = req or BenchRequest()
     try:
         meta = (await client.get("/health", timeout=10.0)).json()
     except httpx.RequestError as e:
@@ -200,7 +160,8 @@ async def benchmark() -> dict:
 
     t0 = time.perf_counter()
 
-    async def one(i: int, bucket: str, prompt: str) -> dict:
+    async def one(i: int, bucket: str, prompt: str, delay: float) -> dict:
+        await asyncio.sleep(delay)
         sent = time.perf_counter() - t0
         r = await client.post("/generate", json={"prompt": prompt}, timeout=BENCH_TIMEOUT_S)
         if r.status_code != 200:
@@ -223,8 +184,14 @@ async def benchmark() -> dict:
         }
 
     try:
+        rng = random.Random(req.seed)
+        at, delays = 0.0, []
+        for _ in PROMPTS:
+            delays.append(at)
+            at += rng.expovariate(req.rate)
         rows = await asyncio.gather(
-            *(one(i, bucket, p) for i, (bucket, p) in enumerate(BENCH_PROMPTS))
+            *(one(i, bucket, p, d)
+              for i, ((bucket, p), d) in enumerate(zip(PROMPTS, delays)))
         )
     except httpx.RequestError as e:
         raise HTTPException(status_code=502, detail=f"model tier unreachable at {MODEL_URL}") from e
@@ -261,6 +228,8 @@ async def benchmark() -> dict:
             "device": meta.get("device"),
             "max_batch": max_batch,
             "prompts": len(rows),
+            "rate": req.rate,
+            "seed": req.seed,
             "output_tokens": tokens,
             "wall_s": wall,
             "itl_sample": len(itls),

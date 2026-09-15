@@ -63,7 +63,7 @@ export const FORMULAS: Record<string, FormulaProps> = {
     what: "Time to first token, worst case. Queue wait plus prefill.",
     formula: "p95( queue_s + prefill_s )",
     caveat:
-      "queue_s is time spent in the engine's pending deque before a row frees. Percentiles are linearly interpolated over 48 samples, which is enough for p90/p95 to be stable but not p99.",
+      "queue_s is time spent in the engine's pending deque before a row frees. Percentiles are linearly interpolated over 128 samples, which is enough for p90/p95 to be stable but not p99.",
   },
   itl_p50_s: {
     what: "Median seconds between consecutive tokens, once generating.",
@@ -106,7 +106,7 @@ export const FORMULAS: Record<string, FormulaProps> = {
     formula: "finished - submitted",
   },
   bucket: {
-    what: "Expected output length, sixteen prompts each.",
+    what: "Expected output length, roughly forty prompts each.",
     formula: "short | medium | long",
     caveat:
       "An expectation, not a guarantee — the model decides when to stop. The spread is deliberate: mixed lengths are what separate continuous batching from static.",

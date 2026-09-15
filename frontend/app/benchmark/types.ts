@@ -22,6 +22,8 @@ export type Result = {
     device: string;
     max_batch: number;
     prompts: number;
+    rate: number;
+    seed: number;
     output_tokens: number;
     wall_s: number;
     itl_sample: number;
