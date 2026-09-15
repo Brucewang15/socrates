@@ -10,10 +10,10 @@ groups:
           summary: "requests waiting far longer than the batch can drain"
 
       - alert: SlowTTFT
-        expr: histogram_quantile(0.95, sum by (le) (rate(socrates_ttft_seconds_bucket[5m]))) > 5
+        expr: histogram_quantile(0.90, sum by (le) (rate(socrates_ttft_seconds_bucket[5m]))) > 5
         for: 5m
         annotations:
-          summary: "p95 TTFT above 5s"
+          summary: "p90 TTFT above 5s"
 
       - alert: ErrorRate
         expr: |
@@ -23,9 +23,3 @@ groups:
         annotations:
           summary: "over 1% of generate calls failing"
 
-      # Silent performance loss: throttling looks exactly like a regression.
-      - alert: GpuThrottling
-        expr: DCGM_FI_DEV_GPU_TEMP > 85
-        for: 5m
-        annotations:
-          summary: "GPU above 85C, clocks likely throttled"

@@ -2,6 +2,10 @@
 #   docker compose -f docker-compose.yaml -f docker-compose.dev.yml up -d prometheus grafana
 services:
   prometheus:
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=1d
+      - --storage.tsdb.retention.size=128MB
     volumes:
       - ./monitoring/prometheus.dev.yml:/etc/prometheus/prometheus.yml:ro
       - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro

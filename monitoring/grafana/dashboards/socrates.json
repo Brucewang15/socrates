@@ -93,6 +93,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
+      "description": "Queue wait plus prefill -- what the caller waits before seeing anything.",
       "targets": [
         {
           "expr": "histogram_quantile(0.50, sum by (le) (rate(socrates_ttft_seconds_bucket[5m])))",
@@ -100,13 +101,13 @@
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(socrates_ttft_seconds_bucket[5m])))",
-          "legendFormat": "p95",
+          "expr": "histogram_quantile(0.90, sum by (le) (rate(socrates_ttft_seconds_bucket[5m])))",
+          "legendFormat": "p90",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(socrates_ttft_seconds_bucket[5m])))",
-          "legendFormat": "p99",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(socrates_ttft_seconds_bucket[5m])))",
+          "legendFormat": "p95",
           "refId": "C"
         }
       ],
@@ -115,13 +116,12 @@
           "unit": "s"
         },
         "overrides": []
-      },
-      "description": "Queue wait plus prefill. The p50/p99 gap is queueing."
+      }
     },
     {
-      "id": 4,
+      "id": 5,
       "type": "timeseries",
-      "title": "ITL",
+      "title": "Queue wait",
       "gridPos": {
         "x": 8,
         "y": 7,
@@ -132,20 +132,21 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
+      "description": "Time before a row freed up. The scheduler's half of TTFT: fix with MAX_BATCH or more replicas.",
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(socrates_itl_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(socrates_queue_seconds_bucket[5m])))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(socrates_itl_seconds_bucket[5m])))",
-          "legendFormat": "p95",
+          "expr": "histogram_quantile(0.90, sum by (le) (rate(socrates_queue_seconds_bucket[5m])))",
+          "legendFormat": "p90",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(socrates_itl_seconds_bucket[5m])))",
-          "legendFormat": "p99",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(socrates_queue_seconds_bucket[5m])))",
+          "legendFormat": "p95",
           "refId": "C"
         }
       ],
@@ -154,13 +155,12 @@
           "unit": "s"
         },
         "overrides": []
-      },
-      "description": "Seconds per generated token. Rises with batch size and context length."
+      }
     },
     {
-      "id": 5,
+      "id": 4,
       "type": "timeseries",
-      "title": "TTFT split",
+      "title": "ITL",
       "gridPos": {
         "x": 16,
         "y": 7,
@@ -171,16 +171,22 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
+      "description": "Seconds per generated token. Rises with batch size and context length.",
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(socrates_queue_seconds_bucket[5m])))",
-          "legendFormat": "queue p95",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(socrates_itl_seconds_bucket[5m])))",
+          "legendFormat": "p50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(socrates_prefill_seconds_bucket[5m])))",
-          "legendFormat": "prefill p95",
+          "expr": "histogram_quantile(0.90, sum by (le) (rate(socrates_itl_seconds_bucket[5m])))",
+          "legendFormat": "p90",
           "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(socrates_itl_seconds_bucket[5m])))",
+          "legendFormat": "p95",
+          "refId": "C"
         }
       ],
       "fieldConfig": {
@@ -188,8 +194,7 @@
           "unit": "s"
         },
         "overrides": []
-      },
-      "description": "Queue wait is the scheduler's; prefill is the model's."
+      }
     },
     {
       "id": 6,
@@ -198,7 +203,7 @@
       "gridPos": {
         "x": 0,
         "y": 14,
-        "w": 12,
+        "w": 24,
         "h": 7
       },
       "datasource": {
@@ -208,51 +213,22 @@
       "targets": [
         {
           "expr": "rate(socrates_output_tokens_total[1m])",
-          "legendFormat": "generated",
+          "legendFormat": "generated (decode)",
           "refId": "A"
         },
         {
           "expr": "rate(socrates_prompt_tokens_total[1m])",
-          "legendFormat": "prefilled",
+          "legendFormat": "prefilled (prompt)",
           "refId": "B"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "none"
+          "unit": "suffix:tok/s"
         },
         "overrides": []
       },
-      "description": "Tokens/sec. A rate, so percentiles do not apply."
-    },
-    {
-      "id": 7,
-      "type": "timeseries",
-      "title": "Request rate by outcome",
-      "gridPos": {
-        "x": 12,
-        "y": 14,
-        "w": 12,
-        "h": 7
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "expr": "sum by (outcome) (rate(socrates_requests_total[1m]))",
-          "legendFormat": "{{outcome}}",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "reqps"
-        },
-        "overrides": []
-      },
-      "description": "429 queue_full, 413 too_long and 504 timeout fail for different reasons."
+      "description": "Both are tokens/sec but not comparable as speed: decode is one forward pass per token (memory-bound), prefill ingests the whole prompt in one pass (compute-bound). A rate, so percentiles do not apply."
     },
     {
       "id": 8,
@@ -291,7 +267,7 @@
     {
       "id": 9,
       "type": "timeseries",
-      "title": "GPU memory bandwidth & temp",
+      "title": "GPU memory bandwidth (MBU)",
       "gridPos": {
         "x": 12,
         "y": 21,
@@ -307,18 +283,15 @@
           "expr": "DCGM_FI_PROF_DRAM_ACTIVE * 100",
           "legendFormat": "DRAM active %",
           "refId": "A"
-        },
-        {
-          "expr": "DCGM_FI_DEV_GPU_TEMP",
-          "legendFormat": "temp C",
-          "refId": "B"
         }
       ],
       "fieldConfig": {
-        "defaults": {},
+        "defaults": {
+          "unit": "percent"
+        },
         "overrides": []
       },
-      "description": "DRAM active is the hardware's own view of memory bandwidth utilisation -- the ceiling decode is pressed against."
+      "description": "Fraction of cycles the memory interface was actively transferring -- MBU as the hardware measures it. Decode is memory-bound, so this is the ceiling: near 100% means no code change helps, low means overhead-bound."
     }
   ]
 }

@@ -2,7 +2,8 @@
 # they are reachable at host.docker.internal rather than by service name.
 # dcgm-exporter is absent -- it needs an NVIDIA host.
 global:
-  scrape_interval: 5s
+  scrape_interval: 1s
+  scrape_timeout: 900ms
   evaluation_interval: 15s
 
 rule_files:

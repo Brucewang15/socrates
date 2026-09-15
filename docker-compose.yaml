@@ -50,7 +50,10 @@ services:
     restart: unless-stopped
     command:
       - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.retention.time=15d
+      # Whichever limit is hit first wins. The size cap is the real guard:
+      # retention.time alone does not bound disk if cardinality grows.
+      - --storage.tsdb.retention.time=1d
+      - --storage.tsdb.retention.size=512MB
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro

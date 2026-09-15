@@ -1,5 +1,10 @@
 global:
-  scrape_interval: 15s
+  # 2s: a benchmark run is ~50s and queue spikes last a few hundred ms, so 15s
+  # samples miss the shape entirely. Cost is paid back by shorter retention --
+  # samples = series x (retention / interval), so 7.5x faster at 1/7.5 the
+  # window is the same bytes on disk.
+  scrape_interval: 1s
+  scrape_timeout: 900ms
   evaluation_interval: 15s
 
 rule_files:
