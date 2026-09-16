@@ -84,6 +84,7 @@ export default function Benchmark() {
           </section>
 
           <p className="muted">
+            {data.context.target === "vllm" ? "vLLM" : "our engine"} ·{" "}
             {data.context.device} · MAX_BATCH {data.context.max_batch} ·{" "}
             {data.context.rate}/s seed {data.context.seed} ·{" "}
             {data.context.prompts} prompts · {data.context.output_tokens} tokens ·{" "}

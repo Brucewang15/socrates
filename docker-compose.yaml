@@ -59,6 +59,9 @@ services:
       - model
     environment:
       MODEL_URL: http://model:8080
+      # Only reachable while the bench profile is up; the benchmark refuses the
+      # vllm target with a clear error rather than hanging when it is not.
+      VLLM_URL: http://vllm:8100/v1
     ports:
       - "8000:8000"
 
@@ -94,6 +97,51 @@ services:
       - grafana:/var/lib/grafana
     ports:
       - "3001:3000"
+
+  # vLLM as a yardstick, not part of the stack. Behind a profile so `up` never
+  # starts it: it wants the whole card, and two engines sharing one L4 would
+  # measure contention rather than either engine.
+  #
+  #   docker compose stop model
+  #   docker compose --profile bench up -d vllm
+  #   curl -XPOST localhost:8000/api/benchmark -d '{"target":"vllm"}'
+  #   docker compose --profile bench down && docker compose start model
+  #
+  # infra/prod/compare-vllm.sh does that sequence and diffs the two results.
+  #
+  # Same weights volume and the same HF_HOME as the model tier, so it reuses the
+  # 8 GB already on disk instead of downloading Qwen3-4B a second time.
+  #
+  # The flags exist to make the comparison fair rather than flattering. Ours is
+  # 18 rows of 2048 tokens, so vLLM gets the same budget; left alone it would
+  # pick a far larger batch and win on capacity we did not give ourselves.
+  # VLLM_MAX_SEQS=256 unset is the "let it run free" run, which is a different
+  # and also honest question -- record which one you ran.
+  vllm:
+    profiles: ["bench"]
+    image: vllm/vllm-openai:v0.29.0
+    restart: "no"
+    ipc: host                      # vLLM needs a real /dev/shm for its workers
+    environment:
+      HF_HOME: /weights
+    volumes:
+      - weights:/weights
+    expose:
+      - "8100"
+    command:
+      - --model=Qwen/Qwen3-4B
+      - --served-model-name=qwen3-4b
+      - --port=8100
+      - --max-model-len=${VLLM_MAX_LEN:-2048}
+      - --max-num-seqs=${VLLM_MAX_SEQS:-18}
+      - --gpu-memory-utilization=${VLLM_GPU_FRAC:-0.85}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
   # NVIDIA's own telemetry. nvidia-smi cannot report SM occupancy or DRAM
   # activity; DCGM reads the hardware counters.

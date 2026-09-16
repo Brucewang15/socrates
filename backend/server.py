@@ -32,6 +32,15 @@ from backend.prompts import PROMPTS
 load_dotenv()
 
 MODEL_URL = os.getenv("MODEL_URL", "http://localhost:8080")
+# vLLM, when the bench profile is up. Only used by /api/benchmark?target=vllm.
+VLLM_URL = os.getenv("VLLM_URL", "")
+VLLM_MODEL = os.getenv("VLLM_MODEL", "qwen3-4b")
+# vLLM's own --max-num-seqs. It has no endpoint that reports it, and occupancy
+# needs a denominator, so it is passed in rather than guessed.
+VLLM_MAX_SEQS = int(os.getenv("VLLM_MAX_SEQS", "18"))
+# Ours stops at MAX_NEW_TOKENS; vLLM has to be told the same, or it generates
+# longer answers and "throughput" stops comparing like with like.
+BENCH_MAX_TOKENS = int(os.getenv("BENCH_MAX_TOKENS", "1024"))
 ORIGINS = ["http://localhost:3000", "https://socratesllm.vercel.app"]
 TIMEOUT_S = 300
 BENCH_TIMEOUT_S = 1800
@@ -131,10 +140,34 @@ def _spread(xs: list[float]) -> dict[str, float]:
     return {f"p{p}": _pct(xs, p) for p in (50, 90, 95)}
 
 
+def _gaps(ticks: list[tuple[float, int]]) -> list[float]:
+    """Per-token inter-token gaps, measured at this tier.
+
+    Measured rather than taken from the engine's own timing, because the whole
+    point of the vLLM comparison is that both sides are measured the same way --
+    vLLM does not report queue_s or decode_s, and ours reporting an internal
+    number while vLLM reports a client-observed one would flatter ours by the
+    cost of a hop.
+
+    A tick can deliver more than one token: the model tier holds back a partial
+    character, so the next chunk carries two tokens' text (see deltas()). Its gap
+    is therefore split across the tokens it delivered instead of counted once,
+    which would otherwise report an inter-token latency twice the real one.
+    """
+    out: list[float] = []
+    for (t_prev, _), (t_now, k) in zip(ticks, ticks[1:]):
+        if k > 0:
+            out.extend([(t_now - t_prev) / k] * k)
+    return out
+
+
 class BenchRequest(BaseModel):
     rate: float = BENCH_RATE
     seed: int = BENCH_SEED
     bin_s: float = BENCH_BIN_S
+    # "engine" is ours; "vllm" is the same load against vLLM's OpenAI API, which
+    # only answers while the bench compose profile is up.
+    target: str = "engine"
 
 
 async def _drive(client_: httpx.AsyncClient, i: int, bucket: str, prompt: str,
@@ -202,8 +235,108 @@ async def _drive(client_: httpx.AsyncClient, i: int, bucket: str, prompt: str,
         "prefill_s": t["prefill_s"],
         "decode_s": t["decode_s"],
         "total_s": t["total_s"],
-        "itl_s": t["itl_s"],
+        # Measured here, so it is defined the same way as the vLLM run's.
+        "itl_s": _pct(_gaps(ticks), 50),
+        # The engine's own view of the same quantity, for reference. vLLM has no
+        # equivalent, so it is null there.
+        "itl_engine_s": t["itl_s"],
         # Measured at this tier, so it includes the hop the engine cannot see.
+        "ttft_s": ttft,
+        "ticks": ticks,
+    }
+
+
+async def _drive_openai(client_: httpx.AsyncClient, i: int, bucket: str, prompt: str,
+                        delay: float, t0: float) -> dict:
+    """The same request against an OpenAI-compatible server, i.e. vLLM.
+
+    Identical prompt, identical arrival time, identical stop conditions, and the
+    metrics come out of the same arrival timestamps -- that is what makes the two
+    runs comparable. Three settings are doing the real work:
+
+      temperature 0      ours picks argmax; sampling would change answer lengths
+                         and therefore total tokens, which is the denominator of
+                         everything on this page.
+      max_tokens         ours stops at MAX_NEW_TOKENS. Left unset vLLM keeps
+                         going and looks slower per request while doing more work.
+      enable_thinking    Qwen3's chat template defaults to thinking mode, which
+        false            spends hundreds of tokens before answering. Ours passes
+                         enable_thinking=False, so vLLM must too or the two are
+                         not running the same workload at all.
+    """
+    await asyncio.sleep(delay)
+    sent = time.perf_counter() - t0
+    ticks: list[tuple[float, int]] = []
+    first_token = finished = None
+    usage: dict | None = None
+
+    payload = {
+        "model": VLLM_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": BENCH_MAX_TOKENS,
+        "temperature": 0.0,
+        "stream": True,
+        # the last chunk then carries token counts, which beats trusting that one
+        # SSE chunk equals one token
+        "stream_options": {"include_usage": True},
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+
+    async with client_.stream("POST", "/chat/completions", json=payload,
+                              timeout=BENCH_TIMEOUT_S) as r:
+        if r.status_code != 200:
+            detail = (await r.aread()).decode()
+            raise HTTPException(status_code=r.status_code,
+                                detail=f"vllm: {detail[:400]}")
+        async for line in r.aiter_lines():
+            if not line.startswith("data:"):
+                continue
+            body = line[5:].strip()
+            if body == "[DONE]":
+                break
+            now = time.perf_counter() - t0
+            obj = json.loads(body)
+            if obj.get("usage"):
+                usage = obj["usage"]
+            choices = obj.get("choices") or []
+            if not choices:
+                continue                     # the usage-only final chunk
+            # The opening chunk announces the role with empty content and is not
+            # a token; counting it would credit a token that never arrived.
+            content = (choices[0].get("delta") or {}).get("content")
+            if content:
+                if first_token is None:
+                    first_token = now
+                ticks.append((now, 1))
+            finished = now
+
+    finished = finished if finished is not None else time.perf_counter() - t0
+    counted = sum(k for _, k in ticks)
+    out = int(usage.get("completion_tokens", counted)) if usage else counted
+    if out > counted:
+        # tokens whose text was empty: real work, no chunk to time it by
+        ticks.append((finished, out - counted))
+    ttft = (first_token if first_token is not None else finished) - sent
+
+    return {
+        "i": i,
+        "started": sent,
+        "first_token": sent + ttft,
+        "finished": finished,
+        "bucket": bucket,
+        "prompt": prompt,
+        "prompt_tokens": int(usage.get("prompt_tokens", 0)) if usage else 0,
+        "output_tokens": out,
+        "sent": sent,
+        # vLLM exposes no queue/prefill split, so everything before the first
+        # token is charged to prefill and queue is zero. The three still sum to
+        # total_s, which is what the timeline chart stacks.
+        "queue_s": 0.0,
+        "prefill_s": ttft,
+        "decode_s": finished - (sent + ttft),
+        "total_s": finished - sent,
+        "itl_s": _pct(_gaps(ticks), 50),
+        "itl_engine_s": None,
         "ttft_s": ttft,
         "ticks": ticks,
     }
@@ -260,15 +393,48 @@ async def benchmark(req: BenchRequest | None = None) -> dict:
     about when within its span its tokens appeared.
     """
     req = req or BenchRequest()
+    if req.target not in ("engine", "vllm"):
+        raise HTTPException(status_code=422,
+                            detail=f"target must be engine or vllm, not {req.target!r}")
     bin_s = max(0.05, req.bin_s)
-    try:
-        meta = (await client.get("/health", timeout=10.0)).json()
-    except httpx.RequestError as e:
-        raise HTTPException(status_code=502, detail=f"model tier unreachable at {MODEL_URL}") from e
+
+    # One client per target, so the vLLM run cannot inherit our base_url.
+    if req.target == "vllm":
+        if not VLLM_URL:
+            raise HTTPException(status_code=503, detail="VLLM_URL is not set")
+        bench_client = httpx.AsyncClient(
+            base_url=VLLM_URL, timeout=TIMEOUT_S,
+            limits=httpx.Limits(max_connections=256, max_keepalive_connections=64))
+        try:
+            models = (await bench_client.get("/models", timeout=10.0)).json()
+        except httpx.RequestError as e:
+            await bench_client.aclose()
+            raise HTTPException(
+                status_code=502,
+                detail=f"vllm unreachable at {VLLM_URL} -- is the bench profile up?") from e
+        served = [m.get("id") for m in models.get("data", [])]
+        meta = {"device": "cuda", "max_batch": VLLM_MAX_SEQS, "served": served}
+        drive = _drive_openai
+    else:
+        bench_client = None
+        try:
+            meta = (await client.get("/health", timeout=10.0)).json()
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=502, detail=f"model tier unreachable at {MODEL_URL}") from e
+        drive = _drive
 
     max_batch = meta.get("max_batch") or 1
-    active, drive = client, _drive
+    active = bench_client or client
 
+    try:
+        return await _run_bench(req, active, drive, meta, max_batch, bin_s)
+    finally:
+        if bench_client is not None:
+            await bench_client.aclose()
+
+
+async def _run_bench(req: BenchRequest, active: httpx.AsyncClient, drive,
+                     meta: dict, max_batch: int, bin_s: float) -> dict:
     # One throwaway request before the clock starts. The decode graphs for every
     # row count are compiled at model-tier startup (Engine.warmup), which is the
     # only place that can do it reliably -- this is just to confirm the tier
@@ -291,7 +457,7 @@ async def benchmark(req: BenchRequest | None = None) -> dict:
               for i, ((bucket, p), d) in enumerate(zip(PROMPTS, delays)))
         )
     except httpx.RequestError as e:
-        raise HTTPException(status_code=502, detail=f"model tier unreachable at {MODEL_URL}") from e
+        raise HTTPException(status_code=502, detail=f"{req.target} unreachable: {e}") from e
 
     wall = time.perf_counter() - t0
     tokens = sum(r["output_tokens"] for r in rows)
@@ -348,6 +514,10 @@ async def benchmark(req: BenchRequest | None = None) -> dict:
             "bin_s": bin_s,
             "bins": len(throughput),
             "transport": "stream",
+            # which engine produced these numbers, and what it was serving
+            "target": req.target,
+            "served": meta.get("served") or [],
+            "max_tokens": BENCH_MAX_TOKENS,
         },
         "headline": {
             "throughput_tps": tokens / wall,

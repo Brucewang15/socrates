@@ -15,6 +15,8 @@ export type Req = {
   decode_s: number;
   total_s: number;
   itl_s: number;
+  /** The engine's own view of ITL. Null for vLLM, which does not report one. */
+  itl_engine_s: number | null;
   ttft_s: number;
 };
 
@@ -42,6 +44,10 @@ export type Result = {
     bin_s: number;
     bins: number;
     transport: string;
+    /** Which engine produced these numbers: "engine" is ours, "vllm" the yardstick. */
+    target: "engine" | "vllm";
+    served: string[];
+    max_tokens: number;
   };
   headline: {
     throughput_tps: number;
