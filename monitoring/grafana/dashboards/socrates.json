@@ -214,12 +214,12 @@
       },
       "targets": [
         {
-          "expr": "rate(socrates_output_tokens_total[1m])",
+          "expr": "rate(socrates_output_tokens_total[3s])",
           "legendFormat": "generated (decode)",
           "refId": "A"
         },
         {
-          "expr": "rate(socrates_prompt_tokens_total[1m])",
+          "expr": "rate(socrates_prompt_tokens_total[3s])",
           "legendFormat": "prefilled (prompt)",
           "refId": "B"
         }

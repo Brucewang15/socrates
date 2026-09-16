@@ -16,3 +16,7 @@ bench/results
 
 # deployment descriptor, not image content
 docker-compose.yaml
+
+# macOS AppleDouble sidecars; grafana tries to parse ._dashboards.yml
+**/._*
+**/.DS_Store
