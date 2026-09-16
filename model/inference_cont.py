@@ -91,6 +91,23 @@ class Engine:
         model.load_state_dict(load_weights(), assign=True)
         self.model = model.eval().to(DEVICE)
 
+        # Built here rather than in Qwen3.__init__ because the model above is
+        # constructed on the meta device, and a meta buffer cannot be copied to a
+        # real device. Attached, not passed to forward: that is what keeps its 72
+        # tensors module state instead of graph inputs, which is what lets
+        # reduce-overhead capture CUDA graphs. See KVCache.
+        self.cache = KVCache(MAX_BATCH, self.cfg["num_hidden_layers"],
+                             self.cfg["num_key_value_heads"], self.cfg["head_dim"],
+                             max_len=MAX_LEN, dtype=DTYPE, device=DEVICE)
+        self.model.attach_cache(self.cache)
+
+        # The two tensors a decode step feeds in, allocated once. Freshly built
+        # per step they were a host->device allocation on the critical path of the
+        # very loop whose overhead we are cutting; now each step is a copy into
+        # storage that never moves, which is also what CUDA graphs want to see.
+        self.step_ids = torch.zeros((MAX_BATCH, 1), dtype=torch.long, device=DEVICE)
+        self.step_pos = torch.zeros((MAX_BATCH, 1), dtype=torch.long, device=DEVICE)
+
         # Prefill stays eager and decode gets compiled, on purpose.
         #
         # Decode is the same shape every step (T=1), runs thousands of times, and
@@ -113,9 +130,6 @@ class Engine:
             print("decode path compiled (mode=reduce-overhead); "
                   "first steps pay compilation and graph capture", flush=True)
 
-        self.cache = KVCache(MAX_BATCH, self.cfg["num_hidden_layers"],
-                             self.cfg["num_key_value_heads"], self.cfg["head_dim"],
-                             max_len=MAX_LEN, dtype=DTYPE, device=DEVICE)
         self.loop: asyncio.AbstractEventLoop | None = None
         self.rows: list[Request | None] = [None] * MAX_BATCH
         self.n_active = 0
@@ -143,14 +157,15 @@ class Engine:
         if self.decode_model is self.model:
             return                       # eager decode: nothing to trace
         t0 = time.perf_counter()
-        ids = torch.zeros((MAX_BATCH, 1), dtype=torch.long, device=DEVICE)
+        self.step_ids.zero_()
         for width in range(1, MAX_BATCH + 1):
             # more than one step per width: reduce-overhead defers CUDA graph
             # capture past the first call, so a single step can leave the
             # capture itself for the real run to pay.
             for step in range(3):
-                positions = torch.full((width, 1), step, dtype=torch.long, device=DEVICE)
-                self.decode_model(ids[:width], self.cache, slice(0, width), positions)
+                self.step_pos[:width].fill_(step)
+                self.decode_model(self.step_ids[:width], slice(0, width),
+                                  self.step_pos[:width])
         # warmup wrote real tokens into rows 0..MAX_BATCH-1; hand them back empty
         for row in range(MAX_BATCH):
             self.cache.reset(row)
@@ -181,7 +196,7 @@ class Engine:
         # the only thread that touches the device is the one running the loop
         ids = req.ids.to(DEVICE)
         positions = torch.arange(ids.shape[1], device=DEVICE)[None]
-        logits = self.eager_model(ids, self.cache, rows, positions)
+        logits = self.eager_model(ids, rows, positions)
         # the cache no longer tracks this for us -- see KVCache.append
         self.cache.lengths[row] = ids.shape[1]
         IN_TOKENS.inc(ids.shape[1])
@@ -203,9 +218,15 @@ class Engine:
     @torch.no_grad()
     def decode_step(self) -> None:
         live = self.rows[:self.n_active]
-        ids = torch.tensor([[r.output[-1]] for r in live], device=DEVICE)
-        positions = torch.tensor([[self.cache.lengths[r.row]] for r in live], device=DEVICE)
-        logits = self.decode_model(ids, self.cache, slice(0, self.n_active), positions)
+        n = self.n_active
+        # Copy into the preallocated inputs rather than allocating two device
+        # tensors per step. Built on the host first so this is one H2D copy each
+        # into storage whose address never changes.
+        self.step_ids[:n].copy_(
+            torch.tensor([[r.output[-1]] for r in live], dtype=torch.long))
+        self.step_pos[:n].copy_(
+            torch.tensor([[self.cache.lengths[r.row]] for r in live], dtype=torch.long))
+        logits = self.decode_model(self.step_ids[:n], slice(0, n), self.step_pos[:n])
         # every live row wrote exactly one slot; the cache leaves this to us
         for req in live:
             self.cache.lengths[req.row] += 1

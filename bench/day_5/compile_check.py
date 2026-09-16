@@ -54,6 +54,9 @@ def build():
     model = Qwen3(cfg).eval().float()
     cache = KVCache(ROWS, cfg["num_hidden_layers"], cfg["num_key_value_heads"],
                     cfg["head_dim"], max_len=64, dtype=torch.float32, device="cpu")
+    # attached rather than passed to forward: that is what makes the cache module
+    # state instead of a graph input, which is what CUDA graphs need
+    model.attach_cache(cache)
     return cfg, model, cache
 
 
@@ -63,7 +66,7 @@ def prefill(model, cache, rows_n):
     for row in range(rows_n):
         ids = torch.arange(PROMPT_LEN)[None] % TINY["vocab_size"] + row
         positions = torch.arange(ids.shape[1])[None]
-        logits = model(ids, cache, slice(row, row + 1), positions)
+        logits = model(ids, slice(row, row + 1), positions)
         cache.lengths[row] = ids.shape[1]        # caller owns lengths
         out.append([int(logits[:, -1].argmax(-1))])
     return out
@@ -74,7 +77,7 @@ def decode(model, cache, out, steps):
     for _ in range(steps):
         ids = torch.tensor([[o[-1]] for o in out])
         positions = torch.tensor([[cache.lengths[r]] for r in range(len(out))])
-        logits = model(ids, cache, slice(0, len(out)), positions)
+        logits = model(ids, slice(0, len(out)), positions)
         for r in range(len(out)):
             cache.lengths[r] += 1                # caller owns lengths
         for i, tok in enumerate(logits[:, -1].argmax(-1).tolist()):
@@ -146,7 +149,7 @@ def main() -> None:
     ids, positions = decode_args(model, cache, cfg, ROWS)
 
     g_full, b_full, ops_full, why_full = explain(
-        model, ids, cache, slice(0, ROWS), positions)
+        model, ids, slice(0, ROWS), positions)
 
     # one Block, given the tensors it would see mid-forward
     x = model.embed_tokens(ids)

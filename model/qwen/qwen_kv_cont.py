@@ -68,19 +68,64 @@ def apply_rope(x, cos, sin):
     return x * cos + rotate_half(x) * sin
 
 
-class KVCache:
-    """Post-RoPE keys and values, one buffer per layer, one row per sequence.
+class LayerCache(nn.Module):
+    """One layer's post-RoPE keys and values, held as buffers.
+
+    Buffers rather than plain tensors, and that is the whole point. See KVCache.
+    """
+
+    def __init__(self, shape, dtype, device):
+        super().__init__()
+        # persistent=False keeps these out of state_dict(). load_state_dict runs
+        # strict, and no checkpoint has a k/v for a cache, so a persistent buffer
+        # would fail the load on missing keys.
+        self.register_buffer("k", torch.zeros(shape, dtype=dtype, device=device),
+                             persistent=False)
+        self.register_buffer("v", torch.zeros(shape, dtype=dtype, device=device),
+                             persistent=False)
+
+
+class KVCache(nn.Module):
+    """Post-RoPE keys and values, one buffer pair per layer, one row per sequence.
 
     Rows are ragged: lengths[r] is how many tokens row r has written. A row is
     handed to a new request by setting its length back to 0.
+
+    An nn.Module holding registered buffers, rather than a plain object holding a
+    list of tensors, because that is what lets mode="reduce-overhead" capture
+    CUDA graphs.
+
+    A CUDA graph replays a fixed sequence of kernels against fixed memory
+    addresses, so Inductor refuses to capture a graph that writes into one of its
+    own *inputs* -- the caller could pass a different tensor next call and the
+    replay would scribble on the wrong memory. When the cache arrived as a
+    forward() argument, Dynamo lifted all 72 tensors (36 layers x K and V) into
+    graph inputs, and append() then mutated them, so every decode step logged
+
+        skipping cudagraphs due to mutated inputs (72 instances)
+        ... K[r, positions] = k
+
+    and we paid compilation without collecting the graph capture it exists for.
+    Parameters and buffers are exempt: they belong to the module, their addresses
+    are stable, so mutating them in place is safe to record. Registering the cache
+    and reaching it through self.cache -- see Qwen3.forward -- is what moves these
+    tensors from "input" to "module state".
+
+    The escape hatch (inductor's cudagraph_support_input_mutation) is the wrong
+    fix here: it makes input mutation safe by copying the mutated inputs, and this
+    cache is 144 KB/token x 2048 tokens x 18 rows = 5.3 GB. Copying that per step
+    costs far more than the launch overhead being removed.
     """
 
     def __init__(self, max_batch: int, n_layers: int, n_kv_heads: int, head_dim: int,
                  max_len: int = 2048, dtype=torch.bfloat16, device="mps"):
+        super().__init__()
         shape = (max_batch, max_len, n_kv_heads, head_dim)
-        # one buffer per layer, [x] * n would ref a single tensor n times
-        self.keys = [torch.zeros(shape, dtype=dtype, device=device) for _ in range(n_layers)]
-        self.values = [torch.zeros(shape, dtype=dtype, device=device) for _ in range(n_layers)]
+        self.layers = nn.ModuleList(
+            LayerCache(shape, dtype, device) for _ in range(n_layers))
+        # Host-side on purpose: the caller chose these positions, so reading them
+        # back off the device would be a round trip for something it knows, and a
+        # GPU tensor here would be one more thing for the graph to mutate.
         self.lengths = [0] * max_batch
         self.max_len = max_len
 
@@ -90,9 +135,9 @@ class KVCache:
     def move_row(self, src: int, dst: int) -> None:
         """Relocate a live row so the active block stays packed at 0..n-1."""
         n = self.lengths[src]
-        for k, v in zip(self.keys, self.values):
-            k[dst, :n] = k[src, :n]
-            v[dst, :n] = v[src, :n]
+        for layer in self.layers:
+            layer.k[dst, :n] = layer.k[src, :n]
+            layer.v[dst, :n] = layer.v[src, :n]
         self.lengths[dst], self.lengths[src] = n, 0
 
     def append(self, layer_idx: int, rows: slice, k, v, positions):
@@ -117,7 +162,8 @@ class KVCache:
         reading them back off the device would be a round trip for something it
         already knows.
         """
-        K, V = self.keys[layer_idx], self.values[layer_idx]
+        layer = self.layers[layer_idx]
+        K, V = layer.k, layer.v
         r = torch.arange(rows.start, rows.stop, device=k.device)[:, None]
         K[r, positions] = k
         V[r, positions] = v
@@ -226,9 +272,30 @@ class Qwen3(nn.Module):
         self.embed_tokens = nn.Embedding(cfg["vocab_size"], cfg["hidden_size"])
         self.layers = nn.ModuleList(Block(cfg) for _ in range(cfg["num_hidden_layers"]))
         self.norm = RMSNorm(cfg["hidden_size"], cfg["rms_norm_eps"])
+        # Attached after the weights land, not built here: the model is
+        # constructed on the meta device, and a meta buffer cannot be moved to a
+        # real one. See attach_cache.
+        self.cache: KVCache | None = None
 
-    def forward(self, input_ids, cache, rows: slice, positions):
-        """input_ids and positions are both [rows, T]; rows selects cache rows."""
+    def attach_cache(self, cache: KVCache) -> None:
+        """Register the cache as a child module.
+
+        Assigning an nn.Module to an attribute registers it, which is what makes
+        its buffers module state rather than graph inputs -- the difference
+        between CUDA graphs capturing and not. Call it after the model is on its
+        device and before the first forward, since Dynamo traces on that call.
+        """
+        self.cache = cache
+
+    def forward(self, input_ids, rows: slice, positions):
+        """input_ids and positions are both [rows, T]; rows selects cache rows.
+
+        The cache is deliberately *not* a parameter here. Reached through self it
+        is module state with a stable address, so append() may write into it under
+        a CUDA graph; passed in, it is a graph input, and mutating an input is
+        exactly what made Inductor skip cudagraphs for all 72 cache tensors.
+        """
+        cache = self.cache
         x = self.embed_tokens(input_ids)
         cos, sin = rope_tables(self.cfg, positions)
         for i, layer in enumerate(self.layers):
