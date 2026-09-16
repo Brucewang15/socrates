@@ -127,24 +127,36 @@ def timing(r: Request) -> dict:
 
 
 async def deltas(r: Request):
-    """Text as it is generated.
+    """Yields (text, tokens_so_far) as generation proceeds.
 
     A token can be a fragment of a character -- an emoji is four byte-level
     tokens -- and the tokenizer renders an incomplete tail as U+FFFD until the
     next token completes it. Sending that tail would put a replacement char on
     the wire and then never send the real one, since the correction is not an
     append. So decode the whole prefix each time and hold back the unstable end.
+
+    Two consequences of that hold-back, both of which is why the token count
+    rides along instead of being inferred from the deltas: a step can yield no
+    text at all (its token only completed half a character), and the next one
+    then yields the text of two tokens. Counting deltas is not counting tokens,
+    so anything measuring tokens/second has to be told.
+
+    The count is taken from the same snapshot that produced the text. The decode
+    thread appends to r.output while this runs, so reading len(r.output) after
+    decoding would sometimes report a token whose text has not been sent yet.
     """
     sent = ""
     while await asyncio.wait_for(r.stream.get(), timeout=TIMEOUT_S) is not None:
-        text = engine.tok.decode(r.output).rstrip("\ufffd")
+        out = list(r.output)              # snapshot: text and count must agree
+        text = engine.tok.decode(out).rstrip("\ufffd")
         if len(text) > len(sent):
-            yield text[len(sent):]
+            yield text[len(sent):], len(out)
             sent = text
     # the model can stop mid-character; nothing is coming to complete it
-    text = engine.tok.decode(r.output)
+    out = list(r.output)
+    text = engine.tok.decode(out)
     if len(text) > len(sent):
-        yield text[len(sent):]
+        yield text[len(sent):], len(out)
 
 
 @app.post("/generate")
@@ -153,8 +165,8 @@ async def generate(req: GenerateRequest) -> dict:
     token costs an idle coroutine instead of a threadpool thread."""
     r = submit(req.prompt)
     try:
-        async for _ in deltas(r):
-            pass
+        async for _text, _n in deltas(r):
+            pass                      # drain: the buffered reply is r.output
     except TimeoutError:
         r.cancelled = True
         REQUESTS.labels("timeout").inc()
@@ -169,13 +181,19 @@ async def generate(req: GenerateRequest) -> dict:
 
 @app.post("/stream")
 async def stream(req: GenerateRequest) -> StreamingResponse:
-    """One JSON object per line: {"delta": ...} per token, {"done": true, ...} last."""
+    """One JSON object per line.
+
+    {"delta": text, "n": tokens_so_far} per step, {"done": true, ...} last. `n`
+    is what lets a consumer time tokens rather than lines: deltas do not map
+    one-to-one onto tokens (see deltas()), so a client counting lines would
+    undercount, and every tokens/second number computed from it would be wrong.
+    """
     r = submit(req.prompt)
 
     async def lines():
         try:
-            async for delta in deltas(r):
-                yield json.dumps({"delta": delta}) + "\n"
+            async for delta, n in deltas(r):
+                yield json.dumps({"delta": delta, "n": n}) + "\n"
         except (asyncio.CancelledError, TimeoutError):
             # closed tab: stop paying for tokens nobody will read
             r.cancelled = True

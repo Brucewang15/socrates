@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { Distribution, Occupancy, Timeline } from "./charts";
+import { Distribution, Occupancy, Throughput, Timeline } from "./charts";
 import { FORMULAS, Formula } from "./formula";
 import type { Result } from "./types";
 
@@ -10,6 +10,8 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 const TILES = [
   { key: "throughput_tps", label: "throughput", unit: " tok/s", dp: 1 },
+  { key: "throughput_p50_tps", label: "median second", unit: " tok/s", dp: 1 },
+  { key: "throughput_peak_tps", label: "peak second", unit: " tok/s", dp: 1 },
   { key: "per_stream_tps", label: "per stream", unit: " tok/s", dp: 1 },
   { key: "ttft_p95_s", label: "TTFT p95", unit: "s", dp: 2 },
   { key: "itl_p50_s", label: "ITL p50", unit: "s", dp: 3 },
@@ -43,7 +45,7 @@ export default function Benchmark() {
         <div>
           <h1>Benchmark</h1>
           <p className="muted">
-            {ctx?.prompts ?? 64} prompts arriving at {ctx?.rate ?? 3}/s, through{" "}
+            {ctx?.prompts ?? 64} prompts arriving at {ctx?.rate ?? 2}/s, through{" "}
             {ctx?.max_batch ?? "N"} rows — short, medium and long mixed
             expected output.
           </p>
@@ -85,8 +87,26 @@ export default function Benchmark() {
             {data.context.device} · MAX_BATCH {data.context.max_batch} ·{" "}
             {data.context.rate}/s seed {data.context.seed} ·{" "}
             {data.context.prompts} prompts · {data.context.output_tokens} tokens ·{" "}
-            {data.context.wall_s.toFixed(1)}s wall
+            {data.context.wall_s.toFixed(1)}s wall · {data.context.transport} transport
           </p>
+
+          <section className="panel">
+            <h2>Throughput over time</h2>
+            <p className="muted">
+              Tokens counted in the {data.context.bin_s}s bin they actually
+              arrived in, measured token by token off the stream — not the run
+              average spread flat. The dashed line is that average, and the shape
+              around it is what it hides: a ramp while arrivals fill rows, a
+              plateau while the batch is busy, then a drain where only the longest
+              requests are left. Throughput tracks the row count, not the clock.
+            </p>
+            <Throughput
+              data={data.throughput}
+              mean={data.headline.throughput_tps}
+              binS={data.context.bin_s}
+              maxBatch={data.context.max_batch}
+            />
+          </section>
 
           <section className="panel">
             <h2>Timeline</h2>

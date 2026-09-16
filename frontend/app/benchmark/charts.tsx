@@ -8,13 +8,16 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  ComposedChart,
+  Line,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
 import { useSeries } from "./palette";
-import type { Req, Result } from "./types";
+import type { Req, Result, Tick } from "./types";
 
 const AXIS = { fontSize: 11, fill: "var(--text-secondary)" };
 const GRID = "var(--hairline)";
@@ -230,6 +233,45 @@ export function Timeline({ requests }: { requests: Req[] }) {
           <Bar dataKey="decode" stackId="a" fill={c.decode} name="decode"
                radius={[0, 4, 4, 0]} />
         </BarChart>
+      </ResponsiveContainer>
+    </ChartFrame>
+  );
+}
+
+export function Throughput({
+  data, mean, binS, maxBatch,
+}: { data: Tick[]; mean: number; binS: number; maxBatch: number }) {
+  const c = useSeries();
+  const unit = binS === 1 ? "second" : `${binS}s bin`;
+  return (
+    <ChartFrame
+      filename="socrates-benchmark-throughput.png"
+      title={`Throughput per ${unit}`}
+      xLabel="seconds since run start"
+      legend={[
+        { label: `tokens/s in each ${unit} (left axis)`, color: c.decode },
+        { label: "run average, sum(tokens) / wall (dashed)", color: c.prefill },
+        { label: "rows generating (right axis)", color: c.queue },
+      ]}
+    >
+      <ResponsiveContainer width="100%" height={300}>
+        <ComposedChart data={data} margin={{ left: 12, right: 18, top: 8, bottom: 8 }}>
+          <CartesianGrid stroke={GRID} vertical={false} />
+          <XAxis dataKey="t" tick={AXIS} stroke={GRID}
+                 tickFormatter={(v) => `${v.toFixed(0)}s`} />
+          <YAxis yAxisId="tps" tick={AXIS} stroke={GRID}
+                 label={{ value: "tokens / s", angle: -90, position: "insideLeft", style: AXIS }} />
+          <YAxis yAxisId="rows" orientation="right" domain={[0, maxBatch]} allowDecimals={false}
+                 tick={AXIS} stroke={GRID}
+                 label={{ value: "rows", angle: 90, position: "insideRight", style: AXIS }} />
+          <Tooltip {...tip("")} />
+          <Bar yAxisId="tps" dataKey="tokens_s" fill={c.decode} name="tokens/s"
+               radius={[3, 3, 0, 0]} />
+          <Line yAxisId="rows" type="stepAfter" dataKey="rows" stroke={c.queue}
+                strokeWidth={1.5} dot={false} name="rows generating" />
+          <ReferenceLine yAxisId="tps" y={mean} stroke={c.prefill} strokeDasharray="5 4"
+                         ifOverflow="extendDomain" />
+        </ComposedChart>
       </ResponsiveContainer>
     </ChartFrame>
   );

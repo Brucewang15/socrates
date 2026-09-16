@@ -51,7 +51,19 @@ export const FORMULAS: Record<string, FormulaProps> = {
     what: "Aggregate tokens per second across every request at once.",
     formula: "sum(output_tokens) / wall_s",
     caveat:
-      "wall_s runs from the first dispatch to the last response, after a warmup request. This is the whole batch added together, so it is several times what any single caller sees — compare it to per-stream, not to one prompt.",
+      "wall_s runs from the first dispatch to the last response, after a warmup request. This is the whole batch added together, so it is several times what any single caller sees — compare it to per-stream, not to one prompt. It is also one number for a run whose rate was never constant: see the throughput graph for the shape it averages over.",
+  },
+  throughput_p50_tps: {
+    what: "A typical second: the median of the per-second bins.",
+    formula: "p50( tokens in bin / bin width )",
+    caveat:
+      "Tokens are attributed to the bin they actually arrived in, timed off the stream. The median is above the run average because the average includes the ramp at the start and the drain at the end, when few rows are busy.",
+  },
+  throughput_peak_tps: {
+    what: "The best single second of the run.",
+    formula: "max( tokens in bin / bin width )",
+    caveat:
+      "The ceiling this engine reached with this prompt mix, normally the second where the most rows were decoding together. A final bin narrower than half a bin width is excluded — a handful of tokens in the last 40 ms is a huge rate and pure artefact.",
   },
   per_stream_tps: {
     what: "What one caller experiences once their tokens start flowing.",
@@ -60,16 +72,16 @@ export const FORMULAS: Record<string, FormulaProps> = {
       "Median, not mean: a request that emits one token has no gap to measure and would otherwise report its whole decode span as a single interval, which a mean cannot survive. With N rows sharing a decode step, aggregate throughput is roughly N x this.",
   },
   ttft_p95_s: {
-    what: "Time to first token, worst case. Queue wait plus prefill.",
-    formula: "p95( queue_s + prefill_s )",
+    what: "Time to first token, worst case, as the caller sees it.",
+    formula: "p95( first streamed chunk - dispatch )",
     caveat:
-      "queue_s is time spent in the engine's pending deque before a row frees. Percentiles are linearly interpolated over 128 samples, which is enough for p90/p95 to be stable but not p99.",
+      "Measured at this tier off the stream, so it includes queue wait, prefill and the proxy hop — the engine's own view of queue_s + prefill_s is in the table below and is slightly smaller. queue_s is time in the engine's pending deque before a row frees. Percentiles are linearly interpolated over 64 samples, which is enough for p90/p95 to be stable but not p99.",
   },
   itl_p50_s: {
     what: "Median seconds between consecutive tokens, once generating.",
-    formula: "p50( decode_s / (output_tokens - 1) )",
+    formula: "p50( decode_s / output_tokens )",
     caveat:
-      "n tokens have n-1 gaps, and the first token is already counted in TTFT. Requests that emitted fewer than 2 tokens are excluded — they have no gap to measure.",
+      "decode_s runs from the first token to the stop token, which is one interval per token generated after the first, so the divisor is output_tokens. Requests that emitted fewer than 2 tokens are excluded — they have no gap to measure.",
   },
   occupancy: {
     what: "How full the batch was, averaged over the run.",
@@ -94,12 +106,13 @@ export const FORMULAS: Record<string, FormulaProps> = {
     formula: "finished - submitted  ( = queue + prefill + decode )",
   },
   ttft_s: {
-    what: "Time to first token for this request.",
-    formula: "queue_s + prefill_s",
+    what: "Time to first token for this request, measured at the API tier.",
+    formula: "first streamed chunk - dispatch",
+    caveat: "Includes the hop, so it runs a little above the engine's queue_s + prefill_s.",
   },
   itl_s: {
     what: "Mean seconds between tokens for this request.",
-    formula: "decode_s / (output_tokens - 1)",
+    formula: "decode_s / output_tokens",
   },
   latency_s: {
     what: "End-to-end time per request.",

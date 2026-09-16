@@ -120,6 +120,17 @@ say "building both images on the instance (native amd64; ~7 min for model)"
 BUILD=$(ssm_send "set -x
 systemctl stop socrates || true
 rm -rf /tmp/src && mkdir -p /tmp/src /tmp/prof && chmod 777 /tmp/prof
+# Reclaim before building, not after: the DLAMI is ~100 GB of the 150 GB root
+# volume, weights are another ~8, and every model build adds a 6.4 GB image that
+# keeps its own git-sha tag -- so it is not dangling and never gets collected.
+# Three builds in a day is enough to fill the disk, and a full root volume takes
+# the SSM agent down with it: run-command then fails with exit 1 and no output,
+# because the agent cannot write the script it was asked to run. Everything
+# removed here is in ECR and pulls back on demand.
+df -h / | tail -1
+docker image prune -af --filter until=48h || true
+docker builder prune -f --keep-storage=10GB || true
+df -h / | tail -1
 aws s3 cp s3://$BUCKET/socrates-src.tar.gz /tmp/src/src.tar.gz
 cd /tmp/src && tar xzf src.tar.gz
 aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $REGISTRY
@@ -132,10 +143,20 @@ for img in model backend; do
     echo PUSH_\${img}_\${t}=\$?
   done
 done
+df -h / | tail -1
 tail -5 /tmp/deploy.log")
 say "command $BUILD"
 ssm_wait "$BUILD" "build+push" /tmp/deploy.log
-ssm_output "$BUILD" | grep -E "BUILD=|PUSH_" | sed 's/^/    /' | tee -a "$LOG"
+ssm_output "$BUILD" | grep -E "BUILD=|PUSH_|/dev/" | sed 's/^/    /' | tee -a "$LOG"
+
+# A build that failed must not be reported as a deployment: the tags stay on
+# whatever built last, so the service would restart on the old image and look
+# fine. Fail loudly instead.
+if ssm_output "$BUILD" | grep -qE "(MODEL|BACKEND)_BUILD=[^0]|PUSH_[a-z_]*=[^0]"; then
+  say "FAILED: a build or push returned non-zero -- see /tmp/deploy.log on the instance"
+  say "not restarting the service; :latest still points at the previous build"
+  exit 1
+fi
 
 # ---- verify it actually landed ----------------------------------------------
 
