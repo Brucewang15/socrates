@@ -22,7 +22,6 @@ const CAPABILITIES = [
   "Streams tokens as they are generated",
 ];
 const LIMITATIONS = [
-  "The inference engine is not wired up yet",
   "No authentication, sessions, or persistence",
   "Single node, single GPU for now",
 ];
@@ -47,8 +46,30 @@ export default function Page() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt: text }),
       });
-      const data = await res.json();
-      setMessages((m) => [...m, { role: "assistant", content: data.response }]);
+      if (!res.ok || !res.body) throw new Error(await res.text());
+
+      setMessages((m) => [...m, { role: "assistant", content: "" }]);
+      const append = (delta: string) =>
+        setMessages((m) => {
+          const last = m[m.length - 1];
+          return [...m.slice(0, -1), { ...last, content: last.content + delta }];
+        });
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        // one JSON object per line; the tail may be half a line
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+        for (const line of lines) {
+          const ev = JSON.parse(line);
+          if (ev.delta) append(ev.delta);
+        }
+      }
     } catch {
       setMessages((m) => [
         ...m,

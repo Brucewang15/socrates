@@ -7,20 +7,23 @@ whatever can reach the port, which locally is your laptop and in AWS is a
 security group. backend/server.py is the only thing meant to call it, which is
 what keeps this tier a stateless text-in/text-out service.
 
-One background thread owns the device. Request threads only submit and block on
-their request's event, which is what lets several in-flight requests share a
-decode batch.
+One background thread owns the device. Handlers are async and never block on it:
+the decode thread hands each token to the event loop, so the loop stays free to
+answer /metrics and /health while generation is in flight.
 """
 
+import asyncio
+import json
 import threading
 import time
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-import model.inference_cont as cont
 from fastapi import FastAPI, HTTPException, Response
+from fastapi.responses import StreamingResponse
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
     Counter,
@@ -30,9 +33,11 @@ from prometheus_client import (
 )
 from pydantic import BaseModel
 
+import model.inference_cont as cont
+from model.inference_cont import Request
+
 IDLE_S = 0.005
 TIMEOUT_S = 300
-MAX_QUEUE = 16 * cont.MAX_BATCH
 
 # Histograms, not summaries: quantiles have to be computable across replicas,
 # and a mean TTFT hides the bimodal shape queueing creates. Buckets are sized
@@ -53,10 +58,16 @@ LATENCY = Histogram("socrates_request_seconds", "submit to last token",
                     buckets=(.5, 1, 2, 5, 10, 30, 60, 120, 300, 600))
 
 REQUESTS = Counter("socrates_requests_total", "generate calls", ["outcome"])
-OUT_TOKENS = Counter("socrates_output_tokens_total", "tokens generated")
-IN_TOKENS = Counter("socrates_prompt_tokens_total", "tokens prefilled")
 
-app = FastAPI(title="socrates-model")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # the decode thread needs this handle to hand tokens back to the loop
+    engine.loop = asyncio.get_running_loop()
+    yield
+
+
+app = FastAPI(title="socrates-model", lifespan=lifespan)
 
 # Blocking so we don't start serving when model weights hasn't loaded
 engine = cont.Engine()
@@ -70,12 +81,14 @@ def serve() -> None:
             continue
         engine.admit()
         # a request whose first token is a stop token finishes during prefill
-        for req in [r for r in engine.rows[:engine.n_active] if r and r.done]:
-            engine.retire(req)
+        for req in engine.rows[:engine.n_active]:
+            if req.done or req.cancelled:
+                engine.retire(req)
         if engine.n_active:
             engine.decode_step()
-            for req in [r for r in engine.rows[:engine.n_active] if r and r.done]:
-                engine.retire(req)
+            for req in engine.rows[:engine.n_active]:
+                if req.done or req.cancelled:
+                    engine.retire(req)
 
 
 threading.Thread(target=serve, daemon=True).start()
@@ -85,50 +98,98 @@ class GenerateRequest(BaseModel):
     prompt: str
 
 
-@app.post("/generate")
-def generate(req: GenerateRequest) -> dict:
-    # shed load at the door rather than letting the deque grow without bound
-    if len(engine.pending) >= MAX_QUEUE:
-        REQUESTS.labels("queue_full").inc()
-        raise HTTPException(status_code=429, detail="queue full")
+def submit(prompt: str) -> Request:
+    """The engine decides what it can take; this only maps that to a status."""
     try:
-        r = engine.submit(req.prompt)
-    except ValueError as e:
+        return engine.submit(prompt, stream=True)
+    except cont.QueueFull as e:
+        REQUESTS.labels("queue_full").inc()
+        raise HTTPException(status_code=429, detail=str(e)) from None
+    except cont.TooLong as e:
         REQUESTS.labels("too_long").inc()
-        raise HTTPException(status_code=413, detail=str(e)) from e
+        raise HTTPException(status_code=413, detail=str(e)) from None
 
-    # the engine sets this in retire(); nothing here holds a reference to r
-    # afterwards, so a timed-out request is freed once the engine drops its row
-    if not r.event.wait(timeout=TIMEOUT_S):
-        REQUESTS.labels("timeout").inc()
-        raise HTTPException(status_code=504, detail="generation timed out")
+
+def timing(r: Request) -> dict:
     n = len(r.output)
-    queue_s, prefill_s = r.admitted - r.submitted, r.first_token - r.admitted
-    decode_s, itl_s = r.finished - r.first_token, (r.finished - r.first_token) / max(n, 1)
+    queue_s = r.admitted - r.submitted
+    prefill_s = r.first_token - r.admitted
+    decode_s = r.finished - r.first_token
+    itl_s = decode_s / max(n, 1)
     QUEUE.observe(queue_s)
     PREFILL.observe(prefill_s)
     TTFT.observe(queue_s + prefill_s)
     ITL.observe(itl_s)
     LATENCY.observe(r.finished - r.submitted)
     REQUESTS.labels("ok").inc()
-    OUT_TOKENS.inc(n)
-    IN_TOKENS.inc(int(r.ids.shape[1]))
+    return {"queue_s": queue_s, "prefill_s": prefill_s, "decode_s": decode_s,
+            "total_s": r.finished - r.submitted, "itl_s": itl_s}
+
+
+async def deltas(r: Request):
+    """Text as it is generated.
+
+    A token can be a fragment of a character -- an emoji is four byte-level
+    tokens -- and the tokenizer renders an incomplete tail as U+FFFD until the
+    next token completes it. Sending that tail would put a replacement char on
+    the wire and then never send the real one, since the correction is not an
+    append. So decode the whole prefix each time and hold back the unstable end.
+    """
+    sent = ""
+    while await asyncio.wait_for(r.stream.get(), timeout=TIMEOUT_S) is not None:
+        text = engine.tok.decode(r.output).rstrip("\ufffd")
+        if len(text) > len(sent):
+            yield text[len(sent):]
+            sent = text
+    # the model can stop mid-character; nothing is coming to complete it
+    text = engine.tok.decode(r.output)
+    if len(text) > len(sent):
+        yield text[len(sent):]
+
+
+@app.post("/generate")
+async def generate(req: GenerateRequest) -> dict:
+    """Buffered, same shape as before. Async only so that waiting for the last
+    token costs an idle coroutine instead of a threadpool thread."""
+    r = submit(req.prompt)
+    try:
+        async for _ in deltas(r):
+            pass
+    except TimeoutError:
+        r.cancelled = True
+        REQUESTS.labels("timeout").inc()
+        raise HTTPException(status_code=504, detail="generation timed out") from None
     return {
         "response": engine.tok.decode(r.output),
         "prompt_tokens": int(r.ids.shape[1]),
-        "output_tokens": n,
-        "timing": {
-            "queue_s": queue_s,
-            "prefill_s": prefill_s,
-            "decode_s": decode_s,
-            "total_s": r.finished - r.submitted,
-            "itl_s": itl_s,
-        },
+        "output_tokens": len(r.output),
+        "timing": timing(r),
     }
 
 
+@app.post("/stream")
+async def stream(req: GenerateRequest) -> StreamingResponse:
+    """One JSON object per line: {"delta": ...} per token, {"done": true, ...} last."""
+    r = submit(req.prompt)
+
+    async def lines():
+        try:
+            async for delta in deltas(r):
+                yield json.dumps({"delta": delta}) + "\n"
+        except (asyncio.CancelledError, TimeoutError):
+            # closed tab: stop paying for tokens nobody will read
+            r.cancelled = True
+            raise
+        yield json.dumps({"done": True, "prompt_tokens": int(r.ids.shape[1]),
+                          "output_tokens": len(r.output),
+                          "timing": timing(r)}) + "\n"
+
+    return StreamingResponse(lines(), media_type="application/x-ndjson",
+                             headers={"X-Accel-Buffering": "no"})
+
+
 @app.get("/health")
-def health() -> dict:
+async def health() -> dict:
     return {"status": "ok", "device": cont.DEVICE, "max_batch": cont.MAX_BATCH}
 
 
@@ -143,12 +204,12 @@ Gauge("socrates_max_batch", "row capacity").set_function(lambda: cont.MAX_BATCH)
 
 
 @app.get("/metrics")
-def metrics() -> Response:
+async def metrics() -> Response:
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/metrics.json")
-def metrics_json() -> dict:
+async def metrics_json() -> dict:
     return {
         "pending": len(engine.pending),
         "active": engine.n_active,

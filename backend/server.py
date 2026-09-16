@@ -7,10 +7,12 @@ Auth, sessions, conversation history, rate limits and billing land here rather
 than in model/server.py, so the GPU tier stays swappable -- for vLLM, for
 Bedrock, for a second model -- without any of that moving with it.
 
-No streaming yet: this holds the request open and returns the whole string.
+/api/chat is a pass-through stream: bytes from the GPU tier are forwarded to the
+browser as they arrive, so nothing here buffers a whole answer.
 """
 
 import asyncio
+import json
 import math
 import os
 import random
@@ -21,6 +23,7 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from pydantic import BaseModel
 
@@ -69,30 +72,37 @@ class ChatRequest(BaseModel):
 
 
 @app.post("/api/chat")
-async def chat(req: ChatRequest) -> dict:
+async def chat(req: ChatRequest) -> StreamingResponse:
     # auth, rate limit and history load go here, before the prompt is assembled
     started = time.perf_counter()
+    upstream = client.build_request("POST", "/stream", json={"prompt": req.prompt})
     try:
-        r = await client.post("/generate", json={"prompt": req.prompt})
+        r = await client.send(upstream, stream=True)
     except httpx.RequestError as e:
         EDGE_REQUESTS.labels("chat", "502").inc()
         raise HTTPException(status_code=502, detail=f"model tier unreachable at {MODEL_URL}") from e
 
     if r.status_code != 200:
         # pass the model tier's own 413/429/504 through rather than masking it
+        detail = (await r.aread()).decode()
+        await r.aclose()
         EDGE_REQUESTS.labels("chat", str(r.status_code)).inc()
-        detail = r.json().get("detail", r.text) if r.headers.get("content-type", "").startswith("application/json") else r.text
-        raise HTTPException(status_code=r.status_code, detail=detail)
+        raise HTTPException(status_code=r.status_code,
+                            detail=json.loads(detail).get("detail", detail))
 
-    EDGE.observe(time.perf_counter() - started)
-    EDGE_REQUESTS.labels("chat", "200").inc()
+    async def relay():
+        # a closed tab cancels this, which closes the upstream response, which is
+        # what tells the GPU tier to stop generating
+        try:
+            async for chunk in r.aiter_bytes():
+                yield chunk
+        finally:
+            await r.aclose()
+            EDGE.observe(time.perf_counter() - started)
+            EDGE_REQUESTS.labels("chat", "200").inc()
 
-    body = r.json()
-    return {
-        "response": body["response"], 
-        "timing": body.get("timing", {}),
-        "output_tokens": body.get("output_tokens")
-    }
+    return StreamingResponse(relay(), media_type="application/x-ndjson",
+                             headers={"X-Accel-Buffering": "no"})
 
 
 @app.get("/health")
@@ -250,5 +260,5 @@ async def benchmark(req: BenchRequest | None = None) -> dict:
 
 
 @app.get("/metrics")
-def metrics() -> Response:
+async def metrics() -> Response:
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)

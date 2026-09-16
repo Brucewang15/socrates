@@ -6,6 +6,7 @@ Prefill is sequential -- one request at a time, its own length, no padding.
 Decode runs every live row together.
 """
 
+import asyncio
 import os
 import threading
 import time
@@ -13,14 +14,30 @@ from collections import deque
 from dataclasses import dataclass, field
 
 import torch
-from model.qwen.qwen_kv_cont import MODEL_ID, KVCache, Qwen3, load_config, load_weights
+from prometheus_client import Counter
 from transformers import AutoTokenizer
+
+from model.qwen.qwen_kv_cont import MODEL_ID, KVCache, Qwen3, load_config, load_weights
 
 MAX_BATCH = 18
 MAX_NEW_TOKENS = 1024
 MAX_LEN = 2048
+MAX_QUEUE = 16 * MAX_BATCH
 DEVICE = os.getenv("DEVICE", "mps")
 DTYPE = torch.bfloat16
+
+# counted as tokens are produced, not once the request returns, so a scrape
+# during a long generation sees the work in progress
+OUT_TOKENS = Counter("socrates_output_tokens_total", "tokens generated")
+IN_TOKENS = Counter("socrates_prompt_tokens_total", "tokens prefilled")
+
+
+class QueueFull(Exception):
+    pass
+
+
+class TooLong(Exception):
+    pass
 # COMPILE=0 to fall back to eager decode -- worth having when torch.compile
 # graph-breaks on the cache bookkeeping, or when A/B-ing the speedup.
 COMPILE = os.getenv("COMPILE", "1") not in ("0", "false", "False")
@@ -58,9 +75,11 @@ class Request:
     admitted: float = 0.0
     first_token: float = 0.0
     finished: float = 0.0
-    # set when the request retires, so a serving thread can block on one
-    # request instead of polling. The demo path ignores it.
+    # set by a handler whose client went away; the engine drops the row
+    cancelled: bool = False
     event: threading.Event = field(default_factory=threading.Event)
+    # tokens leave here one at a time, None last. Only set for streaming calls.
+    stream: asyncio.Queue | None = None
 
 
 class Engine:
@@ -97,6 +116,7 @@ class Engine:
         self.cache = KVCache(MAX_BATCH, self.cfg["num_hidden_layers"],
                              self.cfg["num_key_value_heads"], self.cfg["head_dim"],
                              max_len=MAX_LEN, dtype=DTYPE, device=DEVICE)
+        self.loop: asyncio.AbstractEventLoop | None = None
         self.rows: list[Request | None] = [None] * MAX_BATCH
         self.n_active = 0
         self.pending: deque[Request] = deque()
@@ -137,16 +157,21 @@ class Engine:
         print(f"decode graphs warm for 1..{MAX_BATCH} rows "
               f"in {time.perf_counter() - t0:.1f}s", flush=True)
 
-    def submit(self, prompt: str) -> Request:
+    def submit(self, prompt: str, stream: bool = False) -> Request:
+        # shed load at the door rather than letting the deque grow without bound
+        if len(self.pending) >= MAX_QUEUE:
+            raise QueueFull(f"{len(self.pending)} requests already waiting")
         req = Request(prompt)
+        if stream:
+            req.stream = asyncio.Queue()
         text = self.tok.apply_chat_template(
             [{"role": "user", "content": prompt}],
             tokenize=False, add_generation_prompt=True, enable_thinking=False,
         )
         req.ids = self.tok(text, return_tensors="pt").input_ids
         if req.ids.shape[1] + MAX_NEW_TOKENS > MAX_LEN:
-            raise ValueError(f"prompt is {req.ids.shape[1]} tokens; with "
-                             f"{MAX_NEW_TOKENS} new it exceeds the {MAX_LEN}-token row")
+            raise TooLong(f"prompt is {req.ids.shape[1]} tokens; with "
+                          f"{MAX_NEW_TOKENS} new it exceeds the {MAX_LEN}-token row")
         self.pending.append(req)
         return req
 
@@ -159,11 +184,14 @@ class Engine:
         logits = self.eager_model(ids, self.cache, rows, positions)
         # the cache no longer tracks this for us -- see KVCache.append
         self.cache.lengths[row] = ids.shape[1]
+        IN_TOKENS.inc(ids.shape[1])
         self.record(req, int(logits[:, -1].argmax(-1)))
 
     def admit(self) -> None:
         while self.pending and self.n_active < MAX_BATCH:
             req = self.pending.popleft()
+            if req.cancelled:
+                continue
             row = self.n_active
             self.cache.reset(row)
             self.rows[row] = req
@@ -187,6 +215,13 @@ class Engine:
         for req, token in zip(live, logits[:, -1].argmax(-1).tolist()):
             self.record(req, int(token))
 
+    def emit(self, req: Request, item: int | None) -> None:
+        """Hand a token to the handler waiting on this request. asyncio.Queue is
+        not thread-safe and this runs on the decode thread, so it goes through
+        the loop rather than straight into the queue."""
+        if req.stream is not None:
+            self.loop.call_soon_threadsafe(req.stream.put_nowait, item)
+
     def record(self, req: Request, token: int) -> None:
         now = time.perf_counter()
         if not req.first_token:
@@ -194,8 +229,11 @@ class Engine:
         if token in self.tok.all_special_ids or len(req.output) >= MAX_NEW_TOKENS:
             req.done = True
             req.finished = now
+            self.emit(req, None)
         else:
             req.output.append(token)
+            OUT_TOKENS.inc()
+            self.emit(req, token)
 
     def retire(self, req: Request) -> None:
         row, last = req.row, self.n_active - 1
@@ -205,6 +243,9 @@ class Engine:
             self.rows[row].row = row
         self.rows[last] = None
         self.n_active -= 1
+        if not req.done:
+            req.finished = time.perf_counter()
+            self.emit(req, None)
         req.event.set()
 
     def run(self) -> None:
