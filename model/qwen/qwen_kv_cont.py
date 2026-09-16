@@ -140,23 +140,30 @@ class KVCache(nn.Module):
             layer.v[dst, :n] = layer.v[src, :n]
         self.lengths[dst], self.lengths[src] = n, 0
 
-    def append(self, layer_idx: int, rows: slice, k, v, positions):
-        """Write k, v at each row's own positions, return the whole window.
+    def append(self, layer_idx: int, rows: slice, k, v, positions, end: int):
+        """Write k, v at each row's own positions, return the window up to `end`.
 
         k, v:      [rows, T, n_kv_heads, head_dim], the new tokens only
         positions: [rows, T], absolute position of each of those tokens
+        end:       how many slots to read back, a plain int
 
-        The read is the full max_len window, not just the filled part, and that
-        is deliberate. Slicing to `int(positions.max()) + 1` needs that value on
-        the host, which is a GPU->CPU sync in every layer -- 36 pipeline stalls
-        per decode step -- and it makes the returned shape grow by one every
-        step, so torch.compile retraces constantly and CUDA graphs never form.
-        A fixed window asks the device nothing and traces once.
+        `end` used to be max_len, always, and that cost more than it looked.
+        A decode step read 18 rows x 2048 slots x 144 KB = 5.44 GB of cache when
+        ~0.8 GB of it was live, and the mask discarded the rest *after* the
+        kernel had already moved the bytes. Masking is not free bandwidth.
 
-        Correctness is unaffected: Attention masks every slot whose index is past
-        that row's own position, so the unwritten tail is already discarded. The
-        cost is attending over max_len slots when fewer are live -- a small and,
-        importantly, constant amount of arithmetic.
+        The reason it was max_len was that the alternative appeared to need
+        `int(positions.max()) + 1` -- a GPU->CPU sync per layer -- and to make the
+        returned shape grow every step, which retraces and stops CUDA graphs from
+        ever forming. Only the second half of that is true. The caller keeps
+        `lengths` on the host, so it already knows how far to read without asking
+        the device anything. What it must not do is pass a *different* number
+        every step, so it rounds up to a bucket: the shape has to be constant,
+        not maximal.
+
+        Correctness is unaffected either way: Attention masks every slot whose
+        index is past that row's own position, so a bucket wider than the live
+        length is harmless. `end` only has to cover the slot being written now.
 
         `lengths` is the caller's to maintain. It chose these positions, so
         reading them back off the device would be a round trip for something it
@@ -167,7 +174,7 @@ class KVCache(nn.Module):
         r = torch.arange(rows.start, rows.stop, device=k.device)[:, None]
         K[r, positions] = k
         V[r, positions] = v
-        return K[rows, :self.max_len], V[rows, :self.max_len]
+        return K[rows, :end], V[rows, :end]
 
 
 class Attention(nn.Module):
@@ -186,7 +193,7 @@ class Attention(nn.Module):
         self.q_norm = RMSNorm(self.hd, cfg["rms_norm_eps"])
         self.k_norm = RMSNorm(self.hd, cfg["rms_norm_eps"])
 
-    def forward(self, x, cos, sin, cache, layer_idx, rows, positions):
+    def forward(self, x, cos, sin, cache, layer_idx, rows, positions, end):
         B, T, _ = x.shape
         group = self.n_heads // self.n_kv_heads          # 4 query heads share one kv head
 
@@ -200,7 +207,7 @@ class Attention(nn.Module):
         k = apply_rope(self.k_norm(k), cos, sin)
 
         
-        k, v = cache.append(layer_idx, rows, k, v, positions)
+        k, v = cache.append(layer_idx, rows, k, v, positions, end)
 
         S = k.shape[1]
 
@@ -258,9 +265,9 @@ class Block(nn.Module):
         self.post_attention_layernorm = RMSNorm(cfg["hidden_size"], cfg["rms_norm_eps"])
         self.mlp = MLP(cfg)
 
-    def forward(self, x, cos, sin, cache, layer_idx, rows, positions):
+    def forward(self, x, cos, sin, cache, layer_idx, rows, positions, end):
         x = x + self.self_attn(self.input_layernorm(x), cos, sin, cache, layer_idx,
-                               rows, positions)
+                               rows, positions, end)
         x = x + self.mlp(self.post_attention_layernorm(x))
         return x
 
@@ -287,8 +294,13 @@ class Qwen3(nn.Module):
         """
         self.cache = cache
 
-    def forward(self, input_ids, rows: slice, positions):
+    def forward(self, input_ids, rows: slice, positions, end: int):
         """input_ids and positions are both [rows, T]; rows selects cache rows.
+
+        `end` is how many cache slots to read back, and it is an int rather than a
+        tensor on purpose: Dynamo guards on its value, so each distinct bucket
+        gets its own graph with a fixed shape, which is what keeps CUDA graphs
+        capturable while the bytes read shrink.
 
         The cache is deliberately *not* a parameter here. Reached through self it
         is module state with a stable address, so append() may write into it under
@@ -299,7 +311,7 @@ class Qwen3(nn.Module):
         x = self.embed_tokens(input_ids)
         cos, sin = rope_tables(self.cfg, positions)
         for i, layer in enumerate(self.layers):
-            x = layer(x, cos, sin, cache, i, rows, positions)
+            x = layer(x, cos, sin, cache, i, rows, positions, end)
         x = self.norm(x)
         # multiply by unembedding matrix which is embedding matrix but flipped
         return x @ self.embed_tokens.weight.T

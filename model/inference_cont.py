@@ -23,6 +23,10 @@ MAX_BATCH = 18
 MAX_NEW_TOKENS = 1024
 MAX_LEN = 2048
 MAX_QUEUE = 16 * MAX_BATCH
+# How coarsely the KV read window is rounded up. Smaller reads fewer bytes per
+# step; larger means fewer distinct shapes, so fewer graphs to compile and warm.
+# The shape has to be constant, not maximal -- see KVCache.append.
+WINDOW_BUCKET = int(os.getenv("WINDOW_BUCKET", "512"))
 DEVICE = os.getenv("DEVICE", "mps")
 DTYPE = torch.bfloat16
 
@@ -136,6 +140,20 @@ class Engine:
         self.pending: deque[Request] = deque()
         self.warmup()
 
+    def window_end(self, longest: int) -> int:
+        """Slots to read for a step whose longest live row is at `longest`.
+
+        Rounded up to WINDOW_BUCKET so the shape repeats: the graph captured for a
+        512-slot window is reused for every step until some row passes 512.
+        """
+        need = longest + 1                      # the slot being written now
+        buckets = -(-need // WINDOW_BUCKET) * WINDOW_BUCKET
+        return min(MAX_LEN, max(WINDOW_BUCKET, buckets))
+
+    def buckets(self) -> list[int]:
+        """Every window a decode step can ask for, so warmup can cover them all."""
+        return list(range(WINDOW_BUCKET, MAX_LEN + 1, WINDOW_BUCKET)) or [MAX_LEN]
+
     @torch.no_grad()
     def warmup(self) -> None:
         """Compile the decode graph for every batch width before serving.
@@ -158,18 +176,24 @@ class Engine:
             return                       # eager decode: nothing to trace
         t0 = time.perf_counter()
         self.step_ids.zero_()
-        for width in range(1, MAX_BATCH + 1):
-            # more than one step per width: reduce-overhead defers CUDA graph
-            # capture past the first call, so a single step can leave the
-            # capture itself for the real run to pay.
-            for step in range(3):
-                self.step_pos[:width].fill_(step)
-                self.decode_model(self.step_ids[:width], slice(0, width),
-                                  self.step_pos[:width])
+        # One graph per (row count, window) pair now, because both are guarded.
+        # That is MAX_BATCH x len(buckets) traces, and every one of them has to be
+        # paid here: a bucket first reached mid-run costs its compile inside a
+        # live request, which is what this whole method exists to prevent.
+        for end in self.buckets():
+            for width in range(1, MAX_BATCH + 1):
+                # more than one step per width: reduce-overhead defers CUDA graph
+                # capture past the first call, so a single step can leave the
+                # capture itself for the real run to pay.
+                for step in range(3):
+                    self.step_pos[:width].fill_(step)
+                    self.decode_model(self.step_ids[:width], slice(0, width),
+                                      self.step_pos[:width], end)
         # warmup wrote real tokens into rows 0..MAX_BATCH-1; hand them back empty
         for row in range(MAX_BATCH):
             self.cache.reset(row)
-        print(f"decode graphs warm for 1..{MAX_BATCH} rows "
+        print(f"decode graphs warm for 1..{MAX_BATCH} rows x "
+              f"{len(self.buckets())} windows {self.buckets()} "
               f"in {time.perf_counter() - t0:.1f}s", flush=True)
 
     def submit(self, prompt: str, stream: bool = False) -> Request:
@@ -196,7 +220,8 @@ class Engine:
         # the only thread that touches the device is the one running the loop
         ids = req.ids.to(DEVICE)
         positions = torch.arange(ids.shape[1], device=DEVICE)[None]
-        logits = self.eager_model(ids, rows, positions)
+        # eager, so no shape guard to satisfy: read exactly the prompt
+        logits = self.eager_model(ids, rows, positions, ids.shape[1])
         # the cache no longer tracks this for us -- see KVCache.append
         self.cache.lengths[row] = ids.shape[1]
         IN_TOKENS.inc(ids.shape[1])
@@ -224,9 +249,12 @@ class Engine:
         # into storage whose address never changes.
         self.step_ids[:n].copy_(
             torch.tensor([[r.output[-1]] for r in live], dtype=torch.long))
-        self.step_pos[:n].copy_(
-            torch.tensor([[self.cache.lengths[r.row]] for r in live], dtype=torch.long))
-        logits = self.decode_model(self.step_ids[:n], slice(0, n), self.step_pos[:n])
+        pos = [self.cache.lengths[r.row] for r in live]
+        self.step_pos[:n].copy_(torch.tensor(pos, dtype=torch.long)[:, None])
+        # No sync to find this: lengths are ours, on the host, already.
+        end = self.window_end(max(pos))
+        logits = self.decode_model(self.step_ids[:n], slice(0, n),
+                                   self.step_pos[:n], end)
         # every live row wrote exactly one slot; the cache leaves this to us
         for req in live:
             self.cache.lengths[req.row] += 1

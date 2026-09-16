@@ -66,10 +66,16 @@ def prefill(model, cache, rows_n):
     for row in range(rows_n):
         ids = torch.arange(PROMPT_LEN)[None] % TINY["vocab_size"] + row
         positions = torch.arange(ids.shape[1])[None]
-        logits = model(ids, slice(row, row + 1), positions)
+        logits = model(ids, slice(row, row + 1), positions, ids.shape[1])
         cache.lengths[row] = ids.shape[1]        # caller owns lengths
         out.append([int(logits[:, -1].argmax(-1))])
     return out
+
+
+def window(cache, rows_n):
+    """Tight window: longest live row + 1. Deliberately not max_len, so a bug in
+    the slice or the mask shows up as wrong tokens rather than being padded over."""
+    return max(cache.lengths[r] for r in range(rows_n)) + 1
 
 
 def decode(model, cache, out, steps):
@@ -77,7 +83,7 @@ def decode(model, cache, out, steps):
     for _ in range(steps):
         ids = torch.tensor([[o[-1]] for o in out])
         positions = torch.tensor([[cache.lengths[r]] for r in range(len(out))])
-        logits = model(ids, slice(0, len(out)), positions)
+        logits = model(ids, slice(0, len(out)), positions, window(cache, len(out)))
         for r in range(len(out)):
             cache.lengths[r] += 1                # caller owns lengths
         for i, tok in enumerate(logits[:, -1].argmax(-1).tolist()):
@@ -149,13 +155,14 @@ def main() -> None:
     ids, positions = decode_args(model, cache, cfg, ROWS)
 
     g_full, b_full, ops_full, why_full = explain(
-        model, ids, slice(0, ROWS), positions)
+        model, ids, slice(0, ROWS), positions, window(cache, ROWS))
 
     # one Block, given the tensors it would see mid-forward
     x = model.embed_tokens(ids)
     cos, sin = rope_tables(cfg, positions)
     g_blk, b_blk, ops_blk, why_blk = explain(
-        model.layers[0], x, cos, sin, cache, 0, slice(0, ROWS), positions)
+        model.layers[0], x, cos, sin, cache, 0, slice(0, ROWS), positions,
+        window(cache, ROWS))
 
     print(f"{'granularity':<12} {'graphs':>7} {'breaks':>7} {'ops':>6}   notes")
     print(f"{'full model':<12} {g_full:>7} {b_full:>7} {ops_full:>6}   "

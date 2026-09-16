@@ -1,9 +1,14 @@
-Three changes today, in three commits: the benchmark now measures the streaming
-path and reports throughput as a curve instead of one number; the same harness
-now drives vLLM so our engine can be reported as a percentage of it; and the KV
-cache moved into registered buffers so `mode="reduce-overhead"` can capture CUDA
-graphs at all. The third one is the interesting write-up, because it worked
-exactly as intended and bought nothing, and finding out why is the whole day.
+Four changes today: the benchmark now measures the streaming path and reports
+throughput as a curve instead of one number; the same harness now drives vLLM so
+our engine can be reported as a percentage of it; the KV cache moved into
+registered buffers so `mode="reduce-overhead"` can capture CUDA graphs at all;
+and then the decode step stopped reading a 2048-slot window when a few hundred
+slots were live.
+
+The third and fourth are the interesting pair. The third worked exactly as
+intended and bought nothing. Finding out why -- the step was bandwidth-bound on
+a window that was mostly zeros -- is what produced the fourth, which took us
+from 56% of vLLM's throughput to 69%.
 
 Everything below was measured on the g6.2xlarge, one L4 (24 GB, ~300 GB/s),
 Qwen3-4B in bf16, 18 rows of 2048 context, 64 prompts arriving Poisson at 2/s
@@ -206,6 +211,101 @@ the profiler counts the graph replay and its constituent kernels both. The
 `1.00x batch-1` column was also an artifact of measuring a single batch size.
 The step time (80.9 ms) and the sync count are still good; the busy fraction is
 not, and no conclusion above rests on it.
+
+## Reading only what is needed: the bucketed window
+
+The CUDA graph fix bought nothing because the step was bandwidth-bound on a
+window that was mostly zeros. So: read less.
+
+The obstacle was supposed to be that slicing needs `int(positions.max()) + 1`,
+a GPU-to-CPU sync per layer. That turns out not to apply to this engine at all.
+`cache.lengths` is a plain Python list that the engine itself maintains -- it is
+where `positions` comes from in the first place -- so the host already knows how
+far to read without asking the device anything. Half the justification in that
+docstring was wrong.
+
+What remains true is the shape argument, and it is a weaker constraint than it
+looks: the window has to be **constant, not maximal**. So `append()` now takes
+an `end`, and the engine rounds the longest live row up to a 512-token bucket:
+
+    end = min(MAX_LEN, ceil((longest_live + 1) / 512) * 512)     # 512/1024/1536/2048
+
+`end` is a plain int, so Dynamo guards on its value and each bucket gets its own
+fixed-shape graph. Correctness needs nothing new: the mask already discards every
+slot past a row's own position, so a bucket wider than the live length is
+harmless, and `end` only has to cover the slot being written this step.
+
+### two predictions, one right and one badly wrong
+
+Before measuring I predicted 20-30% rather than the ~50% the average-context
+arithmetic suggests, because `end` is set by the **longest** live row, not the
+average. All 18 rows share one window, so a single long request drags everyone
+into a bigger bucket. Measured: **+22% throughput**, inside the range.
+
+I also predicted the graph count would hurt: 18 row widths x 4 buckets = 72
+graphs instead of 18, and warmup already cost 280 s, so I expected ~19 minutes
+of startup. Measured: **290.4 s**, up from 280.4 s. Four times the graphs for 4%
+more time, and GPU memory unchanged at 13,398 MiB. Once the first graph exists,
+a new shape reuses nearly all of the compiled artifacts and only re-specialises
+what depends on the shape. That estimate was wrong by 4x, and in the useful
+direction.
+
+### measured, against vLLM on the same box and the same load
+
+    metric              before      after       vllm    after/vllm
+    throughput avg       164.1      200.4      289.8       69.2%
+    throughput p50       189.5      234.0      312.0       75.0%
+    throughput peak      216.0      342.0      450.0       76.0%
+    per-stream            11.7       15.6       25.5       61.0%
+    TTFT p95 (s)         51.89      30.68       9.51      3.2x worse
+    ITL p50 (s)         0.0854     0.0642     0.0392      1.6x worse
+    wall (s)             144.2      118.5       82.9
+
+    share of vLLM's aggregate throughput:  56.4%  ->  69.2%
+
+The arithmetic reconciles almost exactly, which is the part that makes this
+believable. At 55% of peak bandwidth, a measured ITL of 64.2 ms implies about
+10.6 GB moved per step. A 1024-slot window predicts 8.04 GB of weights plus
+18 x 1024 x 144 KB = 2.72 GB of cache, so 10.76 GB, i.e. a 65.2 ms step. Measured
+64.2 ms, within 2%. So the window sat at roughly 1024 on average across the run
+-- exactly the "longest row drags everyone up" effect, since a 512 bucket would
+have predicted 57 ms and a 2048 one 85 ms, which is precisely what we measured
+before the change.
+
+Peak second tells the same story from the other end: 342 tok/s is 18 rows at
+~53 ms/step, which is the 512-window regime early in the run before any row has
+passed 512 tokens.
+
+### the free win: TTFT improved nearly twice as much as throughput
+
+Throughput went up 22%, and TTFT p95 fell 41% (51.9 s -> 30.7 s). That is the
+queueing amplification from earlier, working in our favour. Service time per
+request is 371 tokens x 64.2 ms = 23.8 s, so capacity went from 18/31.6 = 0.57
+req/s to 18/23.8 = **0.76 req/s**. Still under the 2 req/s arrival rate, so the
+run is still saturated and TTFT is still 99.9% queue wait (mean queue 8.73 s
+against mean prefill 0.043 s) -- but the backlog now drains faster, and when you
+are over capacity the wait responds superlinearly to capacity. Nothing about
+prefill changed, and nothing needed to.
+
+### what is left, and what it is worth
+
+We are at 69% of vLLM on throughput and 1.6x its ITL. The remaining bytes gap is
+the shared window: vLLM reads per-row live KV, we read `max(live) rounded up` for
+every row. With mean context ~390 and a 1024 window, we move about 2.7 GB of
+cache where 0.8 GB is live, so roughly 1.9 GB per step is still padding.
+
+Closing that needs per-row windows, which means ragged attention -- either a
+varlen/paged kernel, or `flex_attention` with a block mask that skips
+fully-masked blocks. That is worth about another 1.2x on ITL by the same
+arithmetic (10.76 GB -> 8.84 GB), which would put us near 80% of vLLM. The last
+stretch after that is kernel efficiency: we run at ~55% of peak bandwidth
+against vLLM's ~70%, and that is FlashAttention-style tiling and fusion, not
+layout.
+
+A smaller bucket is not the answer, incidentally. 256 would help only while every
+row is short; the moment one row passes 256 the whole step reads 512 anyway. The
+problem is the sharing, not the granularity.
+
 
 ## Operational note
 
