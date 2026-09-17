@@ -14,10 +14,9 @@ from collections import deque
 from dataclasses import dataclass, field
 
 import torch
+from model.qwen.qwen_kv_cont import MODEL_ID, KVCache, Qwen3, load_config, load_weights
 from prometheus_client import Counter
 from transformers import AutoTokenizer
-
-from model.qwen.qwen_kv_cont import MODEL_ID, KVCache, Qwen3, load_config, load_weights
 
 MAX_BATCH = 18
 MAX_NEW_TOKENS = 1024
@@ -30,8 +29,6 @@ WINDOW_BUCKET = int(os.getenv("WINDOW_BUCKET", "512"))
 DEVICE = os.getenv("DEVICE", "mps")
 DTYPE = torch.bfloat16
 
-# counted as tokens are produced, not once the request returns, so a scrape
-# during a long generation sees the work in progress
 OUT_TOKENS = Counter("socrates_output_tokens_total", "tokens generated")
 IN_TOKENS = Counter("socrates_prompt_tokens_total", "tokens prefilled")
 
@@ -39,11 +36,10 @@ IN_TOKENS = Counter("socrates_prompt_tokens_total", "tokens prefilled")
 class QueueFull(Exception):
     pass
 
-
 class TooLong(Exception):
     pass
-# COMPILE=0 to fall back to eager decode -- worth having when torch.compile
-# graph-breaks on the cache bookkeeping, or when A/B-ing the speedup.
+
+
 COMPILE = os.getenv("COMPILE", "1") not in ("0", "false", "False")
 
 PROMPTS = [

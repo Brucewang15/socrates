@@ -32,14 +32,9 @@ from backend.prompts import PROMPTS
 load_dotenv()
 
 MODEL_URL = os.getenv("MODEL_URL", "http://localhost:8080")
-# vLLM, when the bench profile is up. Only used by /api/benchmark?target=vllm.
 VLLM_URL = os.getenv("VLLM_URL", "")
 VLLM_MODEL = os.getenv("VLLM_MODEL", "qwen3-4b")
-# vLLM's own --max-num-seqs. It has no endpoint that reports it, and occupancy
-# needs a denominator, so it is passed in rather than guessed.
 VLLM_MAX_SEQS = int(os.getenv("VLLM_MAX_SEQS", "18"))
-# Ours stops at MAX_NEW_TOKENS; vLLM has to be told the same, or it generates
-# longer answers and "throughput" stops comparing like with like.
 BENCH_MAX_TOKENS = int(os.getenv("BENCH_MAX_TOKENS", "1024"))
 ORIGINS = ["http://localhost:3000", "https://socratesllm.vercel.app"]
 TIMEOUT_S = 300
@@ -102,8 +97,6 @@ async def chat(req: ChatRequest) -> StreamingResponse:
                             detail=json.loads(detail).get("detail", detail))
 
     async def relay():
-        # a closed tab cancels this, which closes the upstream response, which is
-        # what tells the GPU tier to stop generating
         try:
             async for chunk in r.aiter_bytes():
                 yield chunk
