@@ -182,7 +182,7 @@ export default function Page() {
               <div className={`row ${m.role}`} key={i}>
                 <div className="row-inner">
                   <div className={`avatar ${m.role}`}>
-                    {m.role === "user" ? "You" : <Logo size={16} />}
+                    {m.role === "user" ? "You" : <Logo size={30} />}
                   </div>
                   <div>{m.content}</div>
                 </div>
@@ -211,6 +211,8 @@ export default function Page() {
             <a href={REPO} target="_blank" rel="noreferrer" className="repo">
               <FaGithub size={14} /> Brucewang15/inference
             </a>
+            <span className="sep">—</span>
+            UI inspired by ChatGPT-3 era
           </p>
         </div>
       </main>

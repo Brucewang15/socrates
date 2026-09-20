@@ -1,4 +1,8 @@
-# socrates
+<p align="center">
+  <img src="frontend/public/logo.png" width="112" alt="">
+</p>
+
+<h1 align="center">Socrates</h1>
 
 An LLM inference engine written from scratch. `Qwen/Qwen3-4B` is implemented in
 plain PyTorch, RoPE, QK-norm, 4:1 GQA, SwiGLU, KV cache, and served

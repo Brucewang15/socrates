@@ -36,7 +36,7 @@ body {
   border-top: 1px solid rgba(255,255,255,.2);
   padding: 12px; font-size: 14px; color: var(--text);
 }
-.brand { font-weight: 700; letter-spacing: -0.01em; }
+.brand { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
 
 .main { flex: 1; display: flex; flex-direction: column; }
 .messages { flex: 1; overflow-y: auto; }
@@ -71,7 +71,7 @@ body {
   font-size: 12px; font-weight: 600; color: #fff;
 }
 .avatar.user { background: #5436da; }
-.avatar.assistant { background: #10a37f; border-radius: 4px; }
+.avatar.assistant { background: none; }
 
 .composer {
   padding: 12px 24px 32px;
@@ -94,8 +94,9 @@ body {
   max-width: 760px; margin: 12px auto 0; text-align: center;
   font-size: 12px; color: var(--muted);
 }
+.sep { margin: 0 6px; }
 .repo {
-  display: inline-flex; align-items: center; gap: 6px;
+  display: inline-flex; align-items: center; gap: 6px; vertical-align: middle;
   color: var(--muted); text-decoration: none;
 }
 .repo:hover { color: var(--text); }
