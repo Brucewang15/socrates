@@ -1,9 +1,10 @@
 # socrates
 
-An LLM inference engine written from scratch. `Qwen/Qwen3-4B` is implemented in
-plain PyTorch, RoPE, QK-norm, 4:1 GQA, SwiGLU, KV cache, and served
-through a continuous-batching scheduler behind a streaming HTTP API, deployed on
-a single GPU with Terraform and instrumented end to end.
+An LLM inference engine written from scratch. The Qwen3 architecture is
+implemented in plain PyTorch, RoPE, QK-norm, 4:1 GQA, SwiGLU, KV cache, and
+serves `p-e-w/Qwen3-4B-Instruct-2507-heretic` through a continuous-batching
+scheduler behind a streaming HTTP API, deployed on a single GPU with Terraform
+and instrumented end to end.
 
 No `transformers` modelling code, no vLLM, no TGI in the serving path. vLLM runs
 only as a yardstick, on the same box under the same load.

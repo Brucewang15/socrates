@@ -110,7 +110,10 @@ services:
   # infra/prod/compare-vllm.sh does that sequence and diffs the two results.
   #
   # Same weights volume and the same HF_HOME as the model tier, so it reuses the
-  # 8 GB already on disk instead of downloading Qwen3-4B a second time.
+  # 8 GB already on disk instead of downloading the checkpoint a second time.
+  # --model has to match model/qwen's MODEL_ID or the comparison is between two
+  # different sets of weights; --served-model-name stays the alias the backend
+  # asks for (VLLM_MODEL in backend/server.py).
   #
   # The flags exist to make the comparison fair rather than flattering. Ours is
   # 18 rows of 2048 tokens, so vLLM gets the same budget; left alone it would
@@ -129,7 +132,7 @@ services:
     expose:
       - "8100"
     command:
-      - --model=Qwen/Qwen3-4B
+      - --model=p-e-w/Qwen3-4B-Instruct-2507-heretic
       - --served-model-name=qwen3-4b
       - --port=8100
       - --max-model-len=${VLLM_MAX_LEN:-2048}

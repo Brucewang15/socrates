@@ -8,6 +8,7 @@ Module names match the checkpoint's tensor names so load_state_dict works direct
 
 import json
 import math
+import os
 from pathlib import Path
 
 import torch
@@ -16,8 +17,11 @@ from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
 from torch import nn
 
-CONFIG = Path(__file__).resolve().parents[1] / "configs" / "qwen3-4b.json"
-MODEL_ID = "Qwen/Qwen3-4B"
+# Same architecture as Qwen/Qwen3-4B; only rope_theta differs, and that comes
+# from the config, so the file is named after the checkpoint.
+MODEL_ID = os.getenv("MODEL_ID", "p-e-w/Qwen3-4B-Instruct-2507-heretic")
+CONFIG = (Path(__file__).resolve().parents[1] / "configs"
+          / f"{MODEL_ID.split('/')[-1].lower()}.json")
 
 
 def load_config() -> dict:

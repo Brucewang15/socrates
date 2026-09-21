@@ -8,6 +8,7 @@ it is feeding; everything else follows from that.
 
 import json
 import math
+import os
 from pathlib import Path
 
 import torch
@@ -15,8 +16,13 @@ from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
 from torch import nn
 
-CONFIG = Path(__file__).resolve().parents[1] / "configs" / "qwen3-4b.json"
-MODEL_ID = "Qwen/Qwen3-4B"
+# Same Qwen3 architecture as Qwen/Qwen3-4B -- 36 layers, 32 q heads, 8 kv heads,
+# head_dim 128, tied embeddings -- so nothing below changes. rope_theta does
+# (5e6 against 1e6), and it is read from the config, hence one file per
+# checkpoint named after it.
+MODEL_ID = os.getenv("MODEL_ID", "p-e-w/Qwen3-4B-Instruct-2507-heretic")
+CONFIG = (Path(__file__).resolve().parents[1] / "configs"
+          / f"{MODEL_ID.split('/')[-1].lower()}.json")
 
 
 def load_config() -> dict:
