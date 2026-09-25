@@ -18,7 +18,7 @@ import torch
 REF_PATH = Path(__file__).resolve().parent.parent / "model" / "reference.pt"
 # Whatever model/qwen loads, or the layer-by-layer allclose compares our forward
 # pass against a different checkpoint's activations.
-MODEL = os.getenv("MODEL_ID", "p-e-w/Qwen3-4B-Instruct-2507-heretic")
+MODEL = os.getenv("MODEL_ID", "MassivDash/Qwen3-4B-heretic")
 PROMPT = "The capital of France is"
 
 # Ordered to match the day-2 build order.

@@ -132,7 +132,7 @@ services:
     expose:
       - "8100"
     command:
-      - --model=p-e-w/Qwen3-4B-Instruct-2507-heretic
+      - --model=MassivDash/Qwen3-4B-heretic
       - --served-model-name=qwen3-4b
       - --port=8100
       - --max-model-len=${VLLM_MAX_LEN:-2048}

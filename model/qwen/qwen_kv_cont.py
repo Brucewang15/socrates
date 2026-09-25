@@ -16,11 +16,14 @@ from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
 from torch import nn
 
-# Same Qwen3 architecture as Qwen/Qwen3-4B -- 36 layers, 32 q heads, 8 kv heads,
-# head_dim 128, tied embeddings -- so nothing below changes. rope_theta does
-# (5e6 against 1e6), and it is read from the config, hence one file per
-# checkpoint named after it.
-MODEL_ID = os.getenv("MODEL_ID", "p-e-w/Qwen3-4B-Instruct-2507-heretic")
+# Abliterated Qwen/Qwen3-4B: o_proj and down_proj are edited in the mid and late
+# layers and everything else is byte-identical, so the architecture below is
+# untouched -- 36 layers, 32 q heads, 8 kv heads, head_dim 128, tied embeddings.
+# The config is still read per checkpoint rather than hardcoded, because a
+# derivative of a different base moves rope_theta out from under the RoPE tables:
+# Qwen3-4B is 1e6, Qwen3-4B-Instruct-2507 is 5e6, and nothing in the weights says
+# which one you have.
+MODEL_ID = os.getenv("MODEL_ID", "MassivDash/Qwen3-4B-heretic")
 CONFIG = (Path(__file__).resolve().parents[1] / "configs"
           / f"{MODEL_ID.split('/')[-1].lower()}.json")
 

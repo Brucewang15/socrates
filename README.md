@@ -2,7 +2,7 @@
 
 An LLM inference engine written from scratch. The Qwen3 architecture is
 implemented in plain PyTorch, RoPE, QK-norm, 4:1 GQA, SwiGLU, KV cache, and
-serves `p-e-w/Qwen3-4B-Instruct-2507-heretic` through a continuous-batching
+serves `MassivDash/Qwen3-4B-heretic` through a continuous-batching
 scheduler behind a streaming HTTP API, deployed on a single GPU with Terraform
 and instrumented end to end.
 
