@@ -1,6 +1,12 @@
 """Diff two /api/benchmark results -- ours against vLLM -- on the same axes.
 
     python3 show_compare.py /tmp/bench-engine.json /tmp/bench-vllm.json
+    python3 show_compare.py /tmp/bench-paged.json /tmp/bench-vllm.json \\
+        --baseline /tmp/bench-cont.json
+
+With --baseline, a three-way table follows -- baseline, candidate, vLLM -- and
+a PASS/FAIL on the one gate that decides a switch-over: the candidate's average
+throughput must beat the baseline's, from the same session.
 
 The headline is deliberately "ours as a percentage of vLLM", not an absolute
 number: the absolute depends on the card, the prompt mix and the arrival rate,
@@ -13,12 +19,20 @@ Kept to %-formatting and no f-strings so it runs on the DLAMI's Python 3.10.
 import json
 import sys
 
-if len(sys.argv) < 3:
+args = [x for x in sys.argv[1:]]
+baseline_path = None
+if "--baseline" in args:
+    i = args.index("--baseline")
+    baseline_path = args[i + 1]
+    del args[i:i + 2]
+
+if len(args) < 2:
     print(__doc__)
     raise SystemExit(2)
 
-a = json.load(open(sys.argv[1]))          # ours
-b = json.load(open(sys.argv[2]))          # vLLM
+a = json.load(open(args[0]))              # ours
+b = json.load(open(args[1]))              # vLLM
+base = json.load(open(baseline_path)) if baseline_path else None
 
 
 def same(key, path):
@@ -93,3 +107,46 @@ if sa and sb:
         print("  %4d %7.1f %7.1f  %-30s|%s" % (
             j, xa, xb, "#" * ra, "=" * rb))
     print("  # ours    = vllm")
+
+
+# ---- three-way, when a baseline was given -----------------------------------
+# The gate is relative to a run of the baseline from the same session on the same
+# seeded load, never to a remembered number: day 7 measured two runs of the same
+# code 0.1 tok/s apart, but the box, the driver and the prompt mix all drift
+# between days.
+if base is not None:
+    na = base["context"].get("engine") or "baseline"
+    nb = a["context"].get("engine") or "candidate"
+    print()
+    print("three-way, same session, same load")
+    for key in ("prompts", "rate", "seed", "max_tokens"):
+        if key in base["context"] and key in a["context"]:
+            if base["context"][key] != a["context"][key]:
+                print("  WARNING: %s differs: %s vs %s" % (key, base["context"][key],
+                                                         a["context"][key]))
+    print("  tokens made     %-8s %-8d %-8s %-8d vllm %d" % (
+        na, base["context"]["output_tokens"], nb, a["context"]["output_tokens"],
+        b["context"]["output_tokens"]))
+    print()
+    print("%-22s %10s %10s %10s %9s %9s %9s" % (
+        "metric", na, nb, "vllm", nb + "/" + na, na + "/vllm", nb + "/vllm"))
+    for label, key, dp, better in rows:
+        x, y, z = base["headline"][key], a["headline"][key], b["headline"][key]
+        r1 = 100.0 * y / x if x else float("nan")
+        r2 = 100.0 * x / z if z else float("nan")
+        r3 = 100.0 * y / z if z else float("nan")
+        print("%-22s %10.*f %10.*f %10.*f %8.1f%% %8.1f%% %8.1f%%   %s" % (
+            label, dp, x, dp, y, dp, z, r1, r2, r3, better))
+    print("wall_s                 %10.1f %10.1f %10.1f" % (
+        base["context"]["wall_s"], a["context"]["wall_s"], b["context"]["wall_s"]))
+
+    x, y = base["headline"]["throughput_tps"], a["headline"]["throughput_tps"]
+    delta = 100.0 * (y - x) / x if x else float("nan")
+    print()
+    print("=> gate: %s average throughput %.1f vs %s %.1f tok/s (%+.1f%%): %s" % (
+        nb, y, na, x, delta, "PASS" if y > x else "FAIL"))
+    if abs(delta) < 2.0:
+        print("   within 2%: inside run-to-run noise -- re-run with another SEED before "
+              "believing either direction")
+    print("   share of vLLM: %s %.1f%% -> %s %.1f%%" % (
+        na, 100.0 * x / theirs, nb, 100.0 * y / theirs))

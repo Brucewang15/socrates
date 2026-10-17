@@ -5,6 +5,10 @@
 **/node_modules
 **/.next
 bench/results
+# the image builds its own kernel in the `kernels` stage; never ship a stray one
+model/kernels/build
+model/kernels/*.so
+**/.pytest_cache
 # captured HF intermediates, only the day-2 diffing scripts read these
 **/*.pt
 **/*.npz

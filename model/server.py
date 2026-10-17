@@ -13,7 +13,9 @@ answer /metrics and /health while generation is in flight.
 """
 
 import asyncio
+import importlib
 import json
+import os
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -69,8 +71,18 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="socrates-model", lifespan=lifespan)
 
+# Which engine serves. Both expose the same surface -- submit, admit, decode_step,
+# retire, rows, n_active, pending -- and share Request and the exceptions, so
+# nothing below this line knows which one it has. paged is the default since
+# day 8; the dense engine stays as the baseline every benchmark is measured
+# against.
+ENGINES = {"cont": "model.inference_cont", "paged": "model.inference_paged"}
+ENGINE = os.getenv("ENGINE", "paged")
+if ENGINE not in ENGINES:
+    raise ValueError(f"ENGINE must be one of {sorted(ENGINES)}, not {ENGINE!r}")
+
 # Blocking so we don't start serving when model weights hasn't loaded
-engine = cont.Engine()
+engine = importlib.import_module(ENGINES[ENGINE]).Engine()
 
 
 def serve() -> None:
@@ -208,7 +220,8 @@ async def stream(req: GenerateRequest) -> StreamingResponse:
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok", "device": cont.DEVICE, "max_batch": cont.MAX_BATCH}
+    return {"status": "ok", "device": cont.DEVICE, "max_batch": cont.MAX_BATCH,
+            "engine": ENGINE}
 
 
 # Sampled at scrape time rather than pushed, so they are always current.
@@ -219,6 +232,11 @@ Gauge("socrates_queue_depth", "requests waiting for a row").set_function(
 Gauge("socrates_active_rows", "rows currently generating").set_function(
     lambda: engine.n_active)
 Gauge("socrates_max_batch", "row capacity").set_function(lambda: cont.MAX_BATCH)
+if ENGINE == "paged":
+    # Worst-case reservation means this cannot reach zero at 18 rows; it is here
+    # for the lazy-allocation follow-up, where it is the number that matters.
+    Gauge("socrates_kv_blocks_free", "KV cache blocks not owned by any row").set_function(
+        lambda: engine.allocator.n_free)
 
 
 @app.get("/metrics")

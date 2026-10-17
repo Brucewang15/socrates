@@ -19,6 +19,10 @@ services:
     restart: unless-stopped
     environment:
       DEVICE: cuda
+      # paged = paged attention (default since day 8: +18% throughput over the
+      # dense cache in the same session), cont = the dense KV cache it replaced.
+      # Override in /opt/socrates/.env or inline: ENGINE=cont docker compose up -d model
+      ENGINE: ${ENGINE:-paged}
     volumes:
       # 8 GB of weights
       - weights:/weights
