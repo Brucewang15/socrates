@@ -42,7 +42,7 @@ without moving with it.
 flowchart LR
   U["Browser<br/><i>Next.js on Vercel</i>"]
 
-  subgraph EC2["EC2 g6.2xlarge · 1× L4 · Docker Compose"]
+  subgraph EC2["EC2 g6.xlarge · 1× L4 · Docker Compose"]
     direction LR
     C["<b>Caddy</b><br/>:443, automatic TLS"]
     B["<b>backend</b> :8000<br/>FastAPI · CPU tier<br/>CORS, load-gen, proxy"]
