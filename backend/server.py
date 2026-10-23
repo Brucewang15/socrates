@@ -509,6 +509,8 @@ async def _run_bench(req: BenchRequest, active: httpx.AsyncClient, drive,
             "transport": "stream",
             # which engine produced these numbers, and what it was serving
             "target": req.target,
+            # cont or paged when the target is ours (from /health); absent for vLLM
+            "engine": meta.get("engine"),
             "served": meta.get("served") or [],
             "max_tokens": BENCH_MAX_TOKENS,
         },

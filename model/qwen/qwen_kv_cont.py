@@ -8,6 +8,7 @@ it is feeding; everything else follows from that.
 
 import json
 import math
+import os
 from pathlib import Path
 
 import torch
@@ -15,8 +16,16 @@ from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
 from torch import nn
 
-CONFIG = Path(__file__).resolve().parents[1] / "configs" / "qwen3-4b.json"
-MODEL_ID = "Qwen/Qwen3-4B"
+# Abliterated Qwen/Qwen3-4B: o_proj and down_proj are edited in the mid and late
+# layers and everything else is byte-identical, so the architecture below is
+# untouched -- 36 layers, 32 q heads, 8 kv heads, head_dim 128, tied embeddings.
+# The config is still read per checkpoint rather than hardcoded, because a
+# derivative of a different base moves rope_theta out from under the RoPE tables:
+# Qwen3-4B is 1e6, Qwen3-4B-Instruct-2507 is 5e6, and nothing in the weights says
+# which one you have.
+MODEL_ID = os.getenv("MODEL_ID", "MassivDash/Qwen3-4B-heretic")
+CONFIG = (Path(__file__).resolve().parents[1] / "configs"
+          / f"{MODEL_ID.split('/')[-1].lower()}.json")
 
 
 def load_config() -> dict:

@@ -1,6 +1,10 @@
 MODEL_PORT    ?= 8080
 BACKEND_PORT  ?= 8000
 MODEL_URL     ?= http://localhost:$(MODEL_PORT)
+# paged = block pool + paged attention (default), cont = dense KV cache.
+# docs/day_8_docs.md. On a Mac, paged runs its PyTorch reference attention.
+ENGINE        ?= paged
+export ENGINE
 COMPOSE_DEV   := docker compose -f docker-compose.yaml -f docker-compose.dev.yml
 
 # frontend -> backend -> model, plus prometheus/grafana scraping the two servers.
@@ -33,6 +37,10 @@ install:
 	uv sync --all-extras
 	npm --prefix frontend install
 
+# Laptop-safe by default; the cuda and weights markers skip themselves.
+test:
+	uv run pytest -q
+
 # Both GPU-host images, from the same docker-compose.yaml the instance runs.
 # Building works anywhere; running needs an NVIDIA host.
 images:
@@ -41,4 +49,4 @@ images:
 push:
 	./push-to-ecr.sh
 
-.PHONY: dev model backend frontend monitoring monitoring-down install images push
+.PHONY: dev model backend frontend monitoring monitoring-down install test images push

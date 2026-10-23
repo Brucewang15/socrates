@@ -24,6 +24,15 @@ model = [
     "transformers>=5.17.0",
 ]
 bench = ["matplotlib>=3.11.1", "numpy>=2"]
+dev = ["pytest==9.1.1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "cuda: needs a CUDA device and the built socrates kernel extension",
+    "weights: loads the real checkpoint; opt in with SOCRATES_WEIGHTS=1",
+]
 
 [build-system]
 requires = ["hatchling"]

@@ -10,12 +10,15 @@ In model/qwen/qwen.py (run from the repo root as `uv run -m model.qwen.qwen`):
 """
 
 import argparse
+import os
 from pathlib import Path
 
 import torch
 
 REF_PATH = Path(__file__).resolve().parent.parent / "model" / "reference.pt"
-MODEL = "Qwen/Qwen3-4B"
+# Whatever model/qwen loads, or the layer-by-layer allclose compares our forward
+# pass against a different checkpoint's activations.
+MODEL = os.getenv("MODEL_ID", "MassivDash/Qwen3-4B-heretic")
 PROMPT = "The capital of France is"
 
 # Ordered to match the day-2 build order.

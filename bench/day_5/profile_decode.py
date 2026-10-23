@@ -22,13 +22,17 @@ bench/day_5/plot_gpu_profile.py on your laptop.
 """
 
 import json
+import importlib
 import os
 import time
 
 import torch
 from torch.profiler import ProfilerActivity, profile, schedule
 
-import model.inference_cont as cont
+# Same switch as model/server.py, so a profile is of the engine that serves.
+ENGINE = os.getenv("ENGINE", "cont")
+cont = importlib.import_module({"cont": "model.inference_cont",
+                                "paged": "model.inference_paged"}[ENGINE])
 
 OUT = os.getenv("PROF_OUT", "/out")
 STEPS = 9  # wait 1 + warmup 3 + active 5
@@ -112,6 +116,7 @@ def main() -> None:
 
     summary = {
         "torch": torch.__version__,
+        "engine": ENGINE,
         "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
         "rows_live": engine.n_active,
         "wall_per_step_ms": wall_per_step_ms,

@@ -1,15 +1,27 @@
 #!/usr/bin/env bash
 #
-# Benchmark our engine against vLLM on the same box, same load, same metrics.
+# Benchmark our engine(s) against vLLM on the same box, same load, same metrics.
 #
-#   ./infra/prod/compare-vllm.sh                  # instance from terraform output
+#   ./infra/prod/compare-vllm.sh                          # instance from terraform output
 #   ./infra/prod/compare-vllm.sh i-0abc123
 #   RATE=2 SEED=0 ./infra/prod/compare-vllm.sh
+#   ENGINES="cont paged" TAG=dev ./infra/prod/compare-vllm.sh   # day 8's three-way run
+#
+# ENGINES runs each of our engines in turn (ENGINE=cont|paged on the model tier),
+# then vLLM, all in one session, so "paged beat cont" is measured against a cont
+# run from the same box ten minutes earlier rather than against last week's
+# number. TAG picks the image tag for model and backend: `dev` is what
+# kernel-on-instance.sh builds, the default is whatever /opt/socrates/.env says.
 #
 # Sequential, not side by side. An L4 has 24 GB; ours holds ~13 and vLLM is told
 # to take 85% of the card, so running both at once would measure contention
-# rather than either engine. The backend stays up throughout -- it is the harness
-# -- while the model tier is stopped for vLLM's turn and started again after.
+# rather than either engine.
+#
+# socrates.service is stopped for the duration and the stack is driven directly
+# from the shipped compose file (/tmp/src, which kernel-on-instance.sh and
+# build-on-instance.sh unpack), because the copy in /opt/socrates is re-fetched
+# from S3 on every service start and may predate ENGINE. The service is started
+# again at the end, which puts production back exactly as it was.
 #
 # The comparison is only worth anything if the workload is identical, which is
 # why the load generator lives in one place (backend/server.py) and speaks both
@@ -24,9 +36,19 @@ PROFILE="${PROFILE:-management}"
 RATE="${RATE:-2}"
 SEED="${SEED:-0}"
 BIN_S="${BIN_S:-1.0}"
+ENGINES="${ENGINES:-cont}"
+TAG="${TAG:-}"
 LOG="${LOG:-/tmp/socrates-compare.log}"
-COMPOSE="docker compose -f /opt/socrates/docker-compose.yaml --env-file /opt/socrates/.env"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+
+# Prepended to every instance-side script that touches compose. -p pins the
+# project name so volumes (weights) and container names match what
+# socrates.service creates. Exported, not prefixed: SSM may run these under
+# dash, where VAR=x before a function call is not reliably passed on.
+PRE=". /opt/socrates/.env
+CF=/tmp/src/docker-compose.yaml; [ -f \"\$CF\" ] || CF=/opt/socrates/docker-compose.yaml
+export IMAGE_TAG=${TAG:-\$IMAGE_TAG}
+dc() { docker compose -p socrates -f \"\$CF\" --env-file /opt/socrates/.env \"\$@\"; }"
 
 say() { printf '%s  %s\n' "$(date -u +%H:%M:%SZ)" "$*" | tee -a "$LOG"; }
 
@@ -71,40 +93,56 @@ ssm_run() {                       # ssm_run "<shell>" "<label>" [max-seconds]
 IID="${1:-}"
 [ -z "$IID" ] && IID=$(cd "$HERE" && terraform output -raw instance_id)
 : > "$LOG"
-say "instance $IID   rate ${RATE}/s   seed $SEED"
+say "instance $IID   rate ${RATE}/s   seed $SEED   engines: $ENGINES   tag: ${TAG:-from .env}"
 
 BENCH_BODY() {                    # BENCH_BODY <target> -> a JSON payload
   printf '{"target":"%s","rate":%s,"seed":%s,"bin_s":%s}' "$1" "$RATE" "$SEED" "$BIN_S"
 }
 
-# ---- our engine ------------------------------------------------------------
+say "stopping socrates.service; the stack is driven directly until the end"
+# Belt and braces: if this script dies part-way -- laptop asleep, SSO session
+# expired -- nothing on this side will ever start the service again. A timer on
+# the host does it after SAFETY_S regardless; the whole comparison takes ~40
+# minutes, and starting an already-running unit at the end is a no-op.
+ssm_run "systemctl stop socrates
+systemd-run --on-active=${SAFETY_S:-7200} --timer-property=AccuracySec=1s \
+  /bin/systemctl start socrates.service
+docker ps --format '{{.Names}}'" "stop service" 300 \
+  | sed 's/^/    /' | tee -a "$LOG"
 
-say "checking the stack is up and the model is loaded"
-ssm_run "$COMPOSE up -d --no-recreate model backend >/dev/null 2>&1
-for i in \$(seq 1 60); do
-  curl -s -m 5 http://localhost:8000/health | grep -q '\"device\":\"cuda\"' && break
+# ---- our engine(s) ---------------------------------------------------------
+
+for E in $ENGINES; do
+  say "starting the model tier with ENGINE=$E (warmup compiles its decode graphs)"
+  ssm_run "$PRE
+export ENGINE=$E
+dc up -d --force-recreate model backend >/dev/null 2>&1
+for i in \$(seq 1 90); do
+  curl -s -m 5 http://localhost:8000/health | grep -q '\"engine\":\"$E\"' && break
   sleep 10
 done
-curl -s -m 5 http://localhost:8000/health; echo" "model ready" 900 | sed 's/^/    /' | tee -a "$LOG"
+curl -s -m 5 http://localhost:8000/health; echo" "model ready ($E)" 1200 | sed 's/^/    /' | tee -a "$LOG"
 
-say "running the load against ours (a few minutes)"
-ssm_run "curl -sS -m 1700 -X POST http://localhost:8000/api/benchmark \
+  say "running the load against ENGINE=$E (a few minutes)"
+  ssm_run "curl -sS -m 1700 -X POST http://localhost:8000/api/benchmark \
   -H 'Content-Type: application/json' -d '$(BENCH_BODY engine)' \
-  -o /tmp/bench-engine.json
+  -o /tmp/bench-$E.json
 python3 -c \"
 import json
-d = json.load(open('/tmp/bench-engine.json'))
-print('ours  %.1f tok/s over %.0fs, %d tokens' % (
+d = json.load(open('/tmp/bench-$E.json'))
+print('$E  %.1f tok/s over %.0fs, %d tokens, engine=%s' % (
     d['headline']['throughput_tps'], d['context']['wall_s'],
-    d['context']['output_tokens']))
-\"" "bench ours" 1800 | sed 's/^/    /' | tee -a "$LOG"
+    d['context']['output_tokens'], d['context'].get('engine')))
+\"" "bench $E" 1800 | sed 's/^/    /' | tee -a "$LOG"
+done
 
 # ---- hand the card to vLLM -------------------------------------------------
 
 say "stopping our model tier and starting vLLM (pull is ~9 GB the first time)"
-ssm_run "set -x
-$COMPOSE stop model
-$COMPOSE --profile bench up -d vllm
+ssm_run "$PRE
+set -x
+dc stop model
+dc --profile bench up -d vllm
 sleep 5
 docker ps --format '{{.Names}} {{.Status}}'" "vllm up" 1800 | sed 's/^/    /' | tee -a "$LOG"
 
@@ -133,29 +171,34 @@ print('vllm  %.1f tok/s over %.0fs, %d tokens' % (
 
 # ---- give the card back ----------------------------------------------------
 
-say "stopping vLLM and bringing our model tier back"
-ssm_run "set -x
-$COMPOSE --profile bench stop vllm
-$COMPOSE --profile bench rm -f vllm
-$COMPOSE start model
+say "stopping vLLM and handing the box back to socrates.service"
+ssm_run "$PRE
+set -x
+dc --profile bench down
+systemctl start socrates
 sleep 10
 docker ps --format '{{.Names}} {{.Status}}'" "restore" 900 | sed 's/^/    /' | tee -a "$LOG"
 
 # ---- the answer ------------------------------------------------------------
 
 say "comparison"
-# The path has to be resolved on the instance. Written with escaped dollars for
-# that reason: an unescaped $(...) here would run on the laptop, where the
-# deployed source does not exist, and silently pick the wrong file.
-ssm_run "SC=/tmp/src/infra/prod/show_compare.py
+# The last engine in ENGINES is the candidate; with more than one, the first is
+# the baseline it has to beat. bench-engine.json keeps the old name working for
+# anything that read it.
+set -- $ENGINES
+FIRST="$1"; LAST="${@: -1}"
+BASE_ARG=""
+[ "$FIRST" != "$LAST" ] && BASE_ARG="--baseline /tmp/bench-$FIRST.json"
+ssm_run "cp /tmp/bench-$LAST.json /tmp/bench-engine.json
+SC=/tmp/src/infra/prod/show_compare.py
 [ -f \"\$SC\" ] || SC=/opt/socrates/show_compare.py
-python3 \"\$SC\" /tmp/bench-engine.json /tmp/bench-vllm.json" "compare" 300 | tee -a "$LOG"
+python3 \"\$SC\" /tmp/bench-$LAST.json /tmp/bench-vllm.json $BASE_ARG" "compare" 300 | tee -a "$LOG"
 
-say "waiting for our model tier to finish warmup before leaving"
+say "waiting for production to finish warmup before leaving"
 ssm_run "for i in \$(seq 1 60); do
   curl -s -m 5 http://localhost:8000/health | grep -q '\"device\":\"cuda\"' && break
   sleep 10
 done
 curl -s -m 5 http://localhost:8000/health; echo" "model back" 900 | sed 's/^/    /' | tee -a "$LOG"
 
-say "done. results on the instance: /tmp/bench-engine.json /tmp/bench-vllm.json"
+say "done. results on the instance: $(for E in $ENGINES; do printf '/tmp/bench-%s.json ' "$E"; done)/tmp/bench-vllm.json"
