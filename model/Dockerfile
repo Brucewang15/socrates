@@ -61,7 +61,7 @@ FROM base AS kernels
 COPY --from=cuda /opt/cuda /usr/local/cuda
 ENV CUDA_HOME=/usr/local/cuda \
     PATH="/usr/local/cuda/bin:$PATH" \
-    TORCH_CUDA_ARCH_LIST=8.9
+    TORCH_CUDA_ARCH_LIST="8.6;8.9"
 # Only the kernel sources, so editing the engine does not recompile the kernel.
 COPY model/kernels/setup.py model/kernels/
 COPY model/kernels/csrc/ model/kernels/csrc/

@@ -4,8 +4,9 @@
 
 Needs an nvcc whose major version matches torch.version.cuda (13 for the locked
 torch 2.14.0), which is why it runs in the Dockerfile's `kernels` stage and not
-on a laptop. Compiled for the L4 only (sm_89); set TORCH_CUDA_ARCH_LIST to build
-for something else.
+on a laptop. Compiled for the two GPUs prod runs on -- A10G (g5, sm_86) and L4
+(g6, sm_89) -- since spot capacity decides which one we get; set
+TORCH_CUDA_ARCH_LIST to build for something else.
 
 The .so has no Python bindings -- see csrc/ops.cpp -- so it is built against the
 limited API and loaded with torch.ops.load_library by model/kernels/__init__.py.
@@ -16,7 +17,7 @@ import os
 from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
-os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "8.9")
+os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "8.6;8.9")
 
 setup(
     name="socrates_kernels",
